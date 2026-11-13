@@ -245,7 +245,7 @@ func infoFor(_ path: String) -> TrackInfo? {
 }
 
 func automix(_ argv: [String]) {
-    var paths: [String] = [], script: [(Double, String)] = [], seconds = 120.0, out: String?, skip = 0.0
+    var paths: [String] = [], script: [(Double, String)] = [], seconds = 120.0, out: String?, skip = 0.0, trace = false, lastTrace = -1.0
     var i = 0
     while i < argv.count {
         switch argv[i] {
@@ -253,6 +253,7 @@ func automix(_ argv: [String]) {
         case "--seconds": seconds = Double(argv[i + 1])!; i += 2
         case "--out": out = argv[i + 1]; i += 2
         case "--skip": skip = Double(argv[i + 1])!; i += 2
+        case "--trace": trace = true; i += 1
         default: paths.append(argv[i]); i += 1
         }
     }
@@ -294,6 +295,19 @@ func automix(_ argv: [String]) {
             next += 1
         }
         session.tick()
+        if trace, let tr = session.transition {
+            let st = session.engine.state
+            let step = (st.masterBeat / 4).rounded(.down)
+            if step != lastTrace, st.masterBeat >= tr.startBeat - 2 {
+                lastTrace = step
+                func row(_ d: Int) -> String {
+                    let k = st.deck(d)
+                    let v = (0..<7).map { k.param(Int32($0)) }
+                    return String(format: "%@ vol %.2f voc %.2f drm %.2f bas %.2f mus %.2f flt %+.2f ech %.2f", k.playing != 0 ? "on " : "off", v[0], v[1], v[2], v[3], v[4], v[5], v[6])
+                }
+                print(String(format: "    p %.3f bpm %6.2f | out: %@ | in: %@ pitch %d", tr.progress(atBeat: st.masterBeat), st.masterBpm, row(tr.from), row(tr.to), session.decks[tr.to].pitch))
+            }
+        }
         session.engine.render(&l, &r, block)
         for k in 0..<block {
             peak = max(peak, abs(l[k]))

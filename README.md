@@ -7,8 +7,9 @@ Built for one MacBook and one listener. The song library is private and is not p
 ## What it does
 
 - **Two decks, four stems each**: vocal, drums, bass, music. Every stem can be muted on its own.
-- **Automix**: queue songs, Blend picks a phrase boundary and blends with a bass swap in the middle. Space forces the mix from the next four-bar boundary.
-- **Different tempos**: within about 10% the tempo glides from one song to the other during the blend and the pitch stays put. Further apart, the mix becomes an echo cut.
+- **Automix**: queue songs, Blend picks a phrase boundary and mixes like a DJ would. The next song comes in thin (lows filtered out), drums first, then its music; on the phrase the lows swap; the old song dissolves into a rising filter and an echo tail. Space forces the mix from the next four-bar boundary.
+- **Keys**: when both keys are heard clearly and sit at most a semitone apart from a match, the next song is nudged by that semitone and the two play together. Otherwise only its drums ride along until the swap, so nothing clashes.
+- **Different tempos**: within about 10% the tempo glides from one song to the other during the blend and the pitch stays put. Further apart, the old song is washed out over four bars (filter sweep, then echo) and the next one starts on the phrase.
 - **Wandering tempos**: songs played by a live drummer, and even an orchestra, are straightened onto a steady grid when they load. Small drifts are resampled as they are; large ones (a few percent and more) also get their pitch corrected during playback, so nothing sounds like a warped tape.
 - **Moves** (always quantized to the bar):
   - `space` MIX: stem blend into the next song

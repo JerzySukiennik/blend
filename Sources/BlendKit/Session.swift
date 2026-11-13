@@ -325,7 +325,7 @@ public final class Session {
         if tr.style == .blend {
             commit(&tr)
         } else {
-            cut(.echo)
+            cut(.echo, lead: 4)
         }
     }
 
@@ -372,17 +372,32 @@ public final class Session {
             tr.style = .echo
             return tr
         }
-        let clash = Key.match(effectiveKey(f), effectiveKey(t)).score == 0
-        tr.lanes = Lanes.blend(from: f, to: t, fromStems: a.stems == 4, toStems: b.stems == 4, clash: clash, toPlaying: toPlaying, beat: 1 / length) { deck, param in
+        let keyed = Key.match(effectiveKey(f), toPlaying ? effectiveKey(t) : b.analysis.key)
+        let sure = toPlaying || min(a.analysis.keyStrength, b.analysis.keyStrength) >= 0.05
+        tr.clash = !sure || keyed.score == 0 || abs(keyed.shift) > 1 || (toPlaying && keyed.shift != 0)
+        tr.pitch = tr.clash || toPlaying ? 0 : keyed.shift
+        tr.lanes = Lanes.blend(from: f, to: t, fromStems: a.stems == 4, toStems: b.stems == 4, toDrums: sb.stemPresent[Stem.drums.rawValue], clash: tr.clash, toPlaying: toPlaying, beat: 1 / length) { deck, param in
             Double(s.deck(deck).param(param))
         }
-        log?("plan blend \(a.info.title) bar \(startBar) -> \(b.info.title) bar \(bStartBar), \(n) bars, clash \(clash), tempo \(tr.tempoFrom) -> \(tr.tempoTo)")
+        log?("plan blend \(a.info.title) bar \(startBar) -> \(b.info.title) bar \(bStartBar), \(n) bars, clash \(tr.clash), key shift \(tr.pitch), tempo \(tr.tempoFrom) -> \(tr.tempoTo)")
         return tr
+    }
+
+    private func tune(_ deck: Int, _ semitones: Int, tag: Int) {
+        decks[deck].pitch = semitones
+        engine.event(Int32(BE_EV_PITCH), deck: deck, at: .nan, value: Double(semitones), tag: tag)
+    }
+
+    public func keyText(_ deck: Int) -> String {
+        guard let t = decks[deck].track else { return "" }
+        let shift = decks[deck].pitch
+        return shift == 0 ? t.analysis.keyName : Key.name(effectiveKey(deck)) + (shift > 0 ? " +\(shift)" : " \(shift)")
     }
 
     private func commit(_ tr: inout Transition) {
         for lane in tr.lanes where lane.applyBase { engine.set(lane.deck, lane.param, Float(lane.base)) }
         if !tr.toWasPlaying {
+            tune(tr.to, tr.pitch, tag: tr.tag)
             for s in 0..<4 { engine.set(tr.to, Int32(BE_P_USER0) + Int32(s), decks[tr.to].stemOn[s] ? 1 : 0) }
             engine.start(tr.to, at: tr.startBeat, trackBeat: tr.toTrackBeat, tag: tr.tag)
         }
@@ -434,6 +449,7 @@ public final class Session {
             tr.manual = true
             tr.committed = true
             for lane in tr.lanes where lane.applyBase { engine.set(lane.deck, lane.param, Float(lane.base)) }
+            tune(tr.to, tr.pitch, tag: tr.tag)
             for st in 0..<4 { engine.set(tr.to, Int32(BE_P_USER0) + Int32(st), decks[tr.to].stemOn[st] ? 1 : 0) }
             engine.start(tr.to, at: tr.startBeat, trackBeat: tr.toTrackBeat, tag: tr.tag)
             transition = tr
@@ -464,6 +480,7 @@ public final class Session {
             back.progress = 0
             applyManual(back)
             engine.stop(tr.to)
+            if !tr.toWasPlaying { tune(tr.to, 0, tag: nextTag()) }
             transition = nil
             planEpoch += 1
         }
@@ -474,7 +491,7 @@ public final class Session {
         mash = nil
         current = tr.to
         if let id = decks[tr.to].track?.info.id, let i = queue.firstIndex(where: { $0.id == id }) { queue.remove(at: i) }
-        unloadAt[tr.from] = beat + (tr.style == .echo ? 16 : 4)
+        unloadAt[tr.from] = beat + (tr.style == .echo ? 16 : tr.style == .blend ? 12 : 4)
         countdownBars = nil
         plan = nil
         planEpoch += 1
@@ -567,7 +584,7 @@ public final class Session {
         engine.set(deck, Int32(BE_P_ECHO), 0)
     }
 
-    private func cut(_ style: Transition.Style) {
+    private func cut(_ style: Transition.Style, lead: Double = 0) {
         guard let c = current, !paused, let a = decks[c].track else { return }
         guard transition == nil else {
             say("Wait for the mix to finish")
@@ -599,8 +616,14 @@ public final class Session {
                 busyUntil = end + 1
             }
         case .echo:
-            let end = sa.beat(ofBar: nextBar(sa, after: da.beat, ahead: 1.5, every: 1)) - da.offset
-            engine.ramp(deck: c, echo, to: 1, start: end - 1, end: end - 0.5, tag: tag)
+            let washed = lead > 0 && n != nil && b != nil
+            let end = sa.beat(ofBar: nextBar(sa, after: da.beat, ahead: 1.5 + (washed ? lead : 0), every: 1)) - da.offset
+            if washed {
+                engine.ramp(deck: c, filter, to: 0.62, start: end - lead, end: end - 0.5, curve: .easeIn, tag: tag)
+                engine.ramp(deck: c, echo, to: 0.85, start: end - min(lead, 3), end: end - 0.5, tag: tag)
+            } else {
+                engine.ramp(deck: c, echo, to: 1, start: end - 1, end: end - 0.5, tag: tag)
+            }
             if let n, let b {
                 prepareFull(n)
                 engine.ramp(deck: c, volume, to: 0, start: end - 0.08, end: end, tag: tag)
@@ -608,7 +631,8 @@ public final class Session {
                 engine.start(n, at: end, trackBeat: startBeat(b), tag: tag)
                 engine.tempoRamp(to: b.analysis.bpm, start: end, end: end, tag: tag)
                 engine.stop(c, at: end + 0.1, tag: tag)
-                tr = Transition(style: .echo, from: c, to: n, startBeat: end - 1, length: 1, toTrackBeat: startBeat(b), tempoFrom: s.masterBpm, tempoTo: b.analysis.bpm, tag: tag)
+                let span = washed ? lead : 1
+                tr = Transition(style: .echo, from: c, to: n, startBeat: end - span, length: span, toTrackBeat: startBeat(b), tempoFrom: s.masterBpm, tempoTo: b.analysis.bpm, tag: tag)
             } else {
                 engine.ramp(deck: c, echo, to: 0, start: end, end: end + 0.1, tag: tag)
             }
@@ -742,12 +766,20 @@ public final class Session {
         let left = p.startBeat - beat
         let shown = max(0, Int((left / 4).rounded(.up)))
         if countdownBars != shown { countdownBars = shown }
-        if left < 6 {
-            if p.style == .blend, left > 0.5 {
-                commit(&p)
-            } else if p.style == .echo, left > 2.2 {
+        if p.style == .echo {
+            if left < 21.4, left > 17.6 {
+                cut(.echo, lead: 16)
+            } else if left < 13.4, left > 9.6 {
+                cut(.echo, lead: 8)
+            } else if left < 6, left > 2.2 {
                 cut(.echo)
             } else if left <= 0.5 {
+                plan = nil
+            }
+        } else if left < 6 {
+            if left > 0.5 {
+                commit(&p)
+            } else {
                 plan = nil
             }
         }

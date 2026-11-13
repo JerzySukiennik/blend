@@ -61,7 +61,7 @@ struct DeckColumn: View {
                     Text(info?.artist.isEmpty == false ? info!.artist : (info == nil ? "Empty" : "Unknown artist")).foregroundStyle(Theme.dim)
                     if let a = d.track?.analysis {
                         Text(bpmText(a.bpm) + " BPM").fontWeight(.semibold).monospacedDigit()
-                        Text(a.keyName).fontWeight(.semibold)
+                        Text(s.keyText(deck)).fontWeight(.semibold)
                     }
                 }
                 .font(.system(size: u * 1.02))

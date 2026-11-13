@@ -74,6 +74,8 @@ public struct Transition {
     public var progress = 0.0
     public var committed = false
     public var toWasPlaying = false
+    public var pitch = 0
+    public var clash = false
     var lanes: [Lane] = []
 
     public var endBeat: Double { startBeat + length }
@@ -84,7 +86,9 @@ public struct Transition {
 }
 
 enum Lanes {
-    static func blend(from f: Int, to t: Int, fromStems: Bool, toStems: Bool, clash: Bool, toPlaying: Bool, beat q: Double, current: (Int, Int32) -> Double) -> [Lane] {
+    static let thin = 0.45
+
+    static func blend(from f: Int, to t: Int, fromStems: Bool, toStems: Bool, toDrums: Bool, clash: Bool, toPlaying: Bool, beat q: Double, current: (Int, Int32) -> Double) -> [Lane] {
         var out: [Lane] = []
         func lane(_ deck: Int, _ param: Int32, initial: Double?, _ segs: [(Double, Double, Double)]) {
             let isTo = deck == t
@@ -94,26 +98,35 @@ enum Lanes {
         }
         let vocals = Int32(BE_P_STEM0), drums = Int32(BE_P_STEM1), bass = Int32(BE_P_STEM2), music = Int32(BE_P_STEM3)
         let volume = Int32(BE_P_VOLUME), filter = Int32(BE_P_FILTER), echo = Int32(BE_P_ECHO)
+        let mid = clash ? 0.75 : 0.5
+        let swap = (mid - q, mid)
         if toStems {
-            lane(t, drums, initial: 0, [(0, 0.25, 1)])
-            lane(t, music, initial: 0, clash ? [(0.5, 0.6875, 1)] : [(0.125, 0.5, 1)])
-            lane(t, vocals, initial: 0, [(0.5, 0.5 + q, 1)])
-            lane(t, bass, initial: 0, [(0.5 - q, 0.5, 1)])
+            lane(t, drums, initial: 0, [(0, clash ? 0.1875 : 0.125, 1)])
+            lane(t, music, initial: 0, !clash ? [(0.125, 0.375, 1)] : toDrums ? [(swap.0, swap.1, 1)] : [(0, 0.25, 0.6), (swap.0, swap.1, 1)])
+            lane(t, vocals, initial: 0, [(mid, mid + q, 1)])
+            lane(t, bass, initial: 0, [(swap.0, swap.1, 1)])
             lane(t, volume, initial: 1, [(0, q, 1)])
-            lane(t, filter, initial: 0, [(0, q, 0)])
+            lane(t, filter, initial: thin, [(swap.0, swap.1, 0)])
         } else {
             lane(t, volume, initial: 0, [(0, 0.4, 1)])
-            lane(t, filter, initial: 0.42, [(0.5 - q, 0.5, 0)])
+            lane(t, filter, initial: thin, [(swap.0, swap.1, 0)])
         }
         lane(t, echo, initial: 0, [])
-        if fromStems {
-            lane(f, bass, initial: nil, [(0.5 - q, 0.5, 0)])
-            lane(f, vocals, initial: nil, clash ? [(0.25, 0.4375, 0)] : [(0.4375, 0.5, 0)])
-            lane(f, music, initial: nil, clash ? [(0.125, 0.4375, 0)] : [(0.5, 0.9375, 0)])
-            lane(f, drums, initial: nil, [(0.5, 0.875, 0)])
+        if fromStems, clash {
+            lane(f, filter, initial: nil, [(0.375, swap.0, 0.4), (swap.0, swap.1, 0.62)])
+            lane(f, echo, initial: nil, [(mid - 0.125, swap.0, 0.75), (mid, mid + q, 0)])
+            for stem in [vocals, drums, bass, music] { lane(f, stem, initial: nil, [(swap.0, swap.1, 0)]) }
+        } else if fromStems {
+            lane(f, filter, initial: nil, [(swap.0, swap.1, thin), (0.5, 0.875, 0.7)])
+            lane(f, bass, initial: nil, [(swap.0, swap.1, 0)])
+            lane(f, vocals, initial: nil, [(0.4375, 0.5, 0)])
+            lane(f, music, initial: nil, [(0.5625, 0.875, 0)])
+            lane(f, drums, initial: nil, [(0.5, 0.8125, 0)])
+            lane(f, echo, initial: nil, [(0.625, 0.8125, 0.55), (0.9375, 1, 0)])
         } else {
-            lane(f, filter, initial: nil, [(0.5 - q, 0.5, 0.42)])
-            lane(f, volume, initial: nil, [(0.5, 1, 0)])
+            lane(f, filter, initial: nil, [(swap.0, swap.1, thin), (0.5, 0.875, 0.7)])
+            lane(f, echo, initial: nil, [(0.625, 0.8125, 0.55), (0.9375, 1, 0)])
+            lane(f, volume, initial: nil, [(0.5625, 0.9375, 0)])
         }
         return out
     }
