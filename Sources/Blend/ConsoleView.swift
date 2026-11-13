@@ -67,6 +67,7 @@ struct DeckColumn: View {
                 .font(.system(size: u * 1.02))
                 .lineLimit(1)
             }
+            FilterBar(value: s.filter[deck])
             HStack(spacing: u * 0.45) {
                 ForEach(Stem.allCases, id: \.rawValue) { stem in
                     StemChip(stem: stem, on: d.stemOn[stem.rawValue], key: keys[stem.rawValue], present: d.track.map { $0.stems == 4 && $0.structure.stemPresent[stem.rawValue] } ?? false)
@@ -76,6 +77,26 @@ struct DeckColumn: View {
         }
         .frame(maxWidth: .infinity)
         .animation(Theme.spring, value: role)
+    }
+}
+
+struct FilterBar: View {
+    @Environment(\.u) private var u
+    let value: Float
+
+    var body: some View {
+        ZStack {
+            Capsule().fill(Theme.line).frame(width: u * 12, height: u * 0.22)
+            Circle().fill(Theme.text).frame(width: u * 0.7, height: u * 0.7).offset(x: CGFloat(value) * u * 6)
+            HStack {
+                Text("LOW").offset(x: -u * 9)
+                Text("HIGH").offset(x: u * 9)
+            }
+            .font(.system(size: u * 0.62, weight: .bold)).tracking(u * 0.08).foregroundStyle(Theme.faint)
+        }
+        .frame(height: u * 0.7)
+        .opacity(value == 0 ? 0 : 1)
+        .animation(.easeOut(duration: 0.2), value: value == 0)
     }
 }
 

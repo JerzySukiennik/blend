@@ -227,10 +227,10 @@ func automix(_ argv: [String]) {
                 session.toggleStem(Int(parts[1])!, Stem(rawValue: Int(parts[2])!)!)
             } else if cmd == "pause" {
                 session.playPause(session.current ?? 0)
-            } else if cmd.hasPrefix("fade") {
-                session.crossfade(delta: Double(cmd.split(separator: ":")[1])!)
             } else if cmd == "fadeend" {
                 session.crossfadeEnd()
+            } else if cmd.hasPrefix("fade:") {
+                session.crossfade(delta: Double(cmd.split(separator: ":")[1]) ?? 0)
             }
             next += 1
         }

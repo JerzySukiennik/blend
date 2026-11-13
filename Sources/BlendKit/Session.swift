@@ -41,6 +41,7 @@ public final class Session {
     public private(set) var analyzing: String?
     public private(set) var mixProgress: Double?
     public private(set) var looping = false
+    public private(set) var filter: [Float] = [0, 0]
     public var autoMix = true
 
     @ObservationIgnored public var loader: (TrackInfo, @escaping (Result<LoadedTrack, Error>) -> Void) -> Void = { info, done in
@@ -255,7 +256,12 @@ public final class Session {
         engine.set(deck, Int32(BE_P_USER0) + Int32(stem.rawValue), decks[deck].stemOn[stem.rawValue] ? 1 : 0)
     }
 
-    public func setFilter(_ deck: Int, _ value: Float) { engine.set(deck, Int32(BE_P_FILTER), max(-1, min(1, value))) }
+    public func setFilter(_ deck: Int, _ value: Float) {
+        let v = max(-1, min(1, value))
+        engine.set(deck, Int32(BE_P_FILTER), v)
+        let shown = (v * 40).rounded() / 40
+        if filter[deck] != shown { filter[deck] = shown }
+    }
 
     public func scratchBegin(_ deck: Int) {
         guard decks[deck].track != nil else { return }
