@@ -1,0 +1,9 @@
+Niepotrzebne/
+.build/
+.swiftpm/
+.DS_Store
+*.m4a
+*.flac
+*.wav
+*.mp3
+.env
