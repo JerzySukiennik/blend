@@ -345,6 +345,37 @@ std::vector<float> beatEnergy(const be_track *t, double fpb, double first, int &
 
 bool be_fit_grid(const double *beatTimes, int n, double &period, double &first, float &confidence) { return fitGrid(beatTimes, n, period, first, confidence); }
 
+int be_lead_stem(const be_track *t) {
+    if (t->stems != BE_STEMS) return 0;
+    double drums = 0, all = 0;
+    for (int64_t i = 0; i < t->frames; i += 8) {
+        double sum = 0;
+        for (int s = 0; s < BE_STEMS; ++s) {
+            double v = (double)t->pcm[s][2 * i] + t->pcm[s][2 * i + 1];
+            if (s == kDrums) drums += v * v;
+            sum += v;
+        }
+        all += sum * sum;
+    }
+    return drums >= 0.01 * all ? kDrums : -1;
+}
+
+void be_note_key(be_track *t) {
+    std::vector<float> tonal = mono(t, t->stems == BE_STEMS ? ((1u << kVocals) | (1u << kBass) | (1u << kOther)) : 1u);
+    Chroma ch = chromaOf(tonal);
+    t->keyHint = detectKey(ch, t->keyHintStrength);
+}
+
+std::vector<int16_t> be_mixdown(const be_track *t) {
+    std::vector<int16_t> out((size_t)t->frames * 2);
+    for (size_t i = 0; i < out.size(); ++i) {
+        int v = 0;
+        for (int s = 0; s < t->stems; ++s) v += t->pcm[s][i];
+        out[i] = (int16_t)std::max(-32768, std::min(32767, v / 2));
+    }
+    return out;
+}
+
 extern "C" {
 
 be_track *be_track_create(int32_t stems, int64_t frames) {
@@ -377,7 +408,8 @@ int32_t be_analyze(const be_track *t, const double *beatTimes, int32_t nBeats, c
     if (!t || !out || t->frames < (int64_t)(kRate * 8)) return 0;
     std::memset(out, 0, sizeof(*out));
     bool stems = t->stems == BE_STEMS;
-    std::vector<float> rhythm = mono(t, stems ? (1u << kDrums) : 1u);
+    int lead = be_lead_stem(t);
+    std::vector<float> rhythm = mono(t, lead >= 0 ? (1u << lead) : 0xFu);
 
     double T = 0, t0 = 0, roundT = 0, roundT0 = 0;
     float conf = 0;
@@ -397,16 +429,25 @@ int32_t be_analyze(const be_track *t, const double *beatTimes, int32_t nBeats, c
         }
         nDownbeats = 0;
     }
+    std::vector<int16_t> mix;
+    auto leadPcm = [&]() -> const int16_t * {
+        if (lead >= 0) return t->pcm[lead].data();
+        if (mix.empty()) mix = be_mixdown(t);
+        return mix.data();
+    };
     if (roundT > 0) {
-        const int16_t *lead = t->pcm[stems ? kDrums : 0].data();
-        float whole = be_kick_tightness(lead, t->frames, roundT, roundT0), fitted = be_kick_tightness(lead, t->frames, T, t0);
+        const int16_t *pcm = leadPcm();
+        float whole = be_kick_tightness(pcm, t->frames, roundT, roundT0, lead < 0), fitted = be_kick_tightness(pcm, t->frames, T, t0, lead < 0);
         bool heard = whole > 0 || fitted > 0, close = std::fabs(60.0 / roundT - 60.0 / T) < 0.01;
         if (heard ? whole >= fitted - 0.01f : close) {
             T = roundT;
             t0 = roundT0;
         }
     }
-    t0 = refinePhase(rhythm, t0, T, !stems);
+    t0 = refinePhase(rhythm, t0, T, !(stems && lead == kDrums));
+    if (!ok) conf = std::min(conf, 0.3f + be_kick_tightness(leadPcm(), t->frames, T, t0, lead < 0));
+    mix.clear();
+    mix.shrink_to_fit();
     double shift = std::floor(t0 / T);
     t0 -= shift * T;
     rhythm.clear();
@@ -422,6 +463,10 @@ int32_t be_analyze(const be_track *t, const double *beatTimes, int32_t nBeats, c
     tonal.clear();
     tonal.shrink_to_fit();
     out->key = detectKey(ch, out->keyStrength);
+    if (t->keyHint >= 0) {
+        out->key = t->keyHint;
+        out->keyStrength = t->keyHintStrength;
+    }
 
     int barPhase = 0;
     if (nDownbeats >= 4) {

@@ -8,11 +8,12 @@ Built for one MacBook and one listener. The song library is private and is not p
 
 - **Two decks, four stems each**: vocal, drums, bass, music. Every stem can be muted on its own.
 - **Automix**: queue songs, Blend picks a phrase boundary and blends with a bass swap in the middle. Space forces the mix from the next four-bar boundary.
-- **Different tempos**: within about 8% the tempo glides from one song to the other during the blend and the pitch stays put. Further apart, the mix becomes an echo cut. Songs played by a live drummer are straightened onto a steady grid when they load.
+- **Different tempos**: within about 10% the tempo glides from one song to the other during the blend and the pitch stays put. Further apart, the mix becomes an echo cut.
+- **Wandering tempos**: songs played by a live drummer, and even an orchestra, are straightened onto a steady grid when they load. Small drifts are resampled as they are; large ones (a few percent and more) also get their pitch corrected during playback, so nothing sounds like a warped tape.
 - **Moves** (always quantized to the bar):
   - `space` MIX: stem blend into the next song
   - `V` VOCAL: next song's vocal over the current beat, key matched
-  - `B` BEAT: current vocal over the next song's drums and bass
+  - `B` BEAT: current vocal over the next song's drums and bass (an instrumental keeps its melody instead)
   - `U` BUILD: four-bar filter and roll build, then the next song's drop
   - `D` DROP: jump to the next drop
   - `L` LOOP: four-beat loop, `[` and `]` halve and double it
@@ -27,7 +28,7 @@ Built for one MacBook and one listener. The song library is private and is not p
 
 ## Layout
 
-- `Sources/BlendEngine`: C++ audio engine. Decks are slaved to a master beat clock, stems are time-stretched separately (Signalsmith Stretch), automation is scheduled in beats and fired sample-accurately. Also the analyzer (beat grid, downbeat and phrase phase, key, loudness) and the tempo straightener, which resamples a drifting song by a percent or two so its beats land on a constant grid.
+- `Sources/BlendEngine`: C++ audio engine. Decks are slaved to a master beat clock, stems are time-stretched separately (Signalsmith Stretch), automation is scheduled in beats and fired sample-accurately. Also the analyzer (beat grid, downbeat and phrase phase, key, loudness) and the tempo straightener, which resamples a drifting song so its beats land on a constant grid and, when the speed change is large, keeps a pitch correction curve that the decks apply through the stretcher.
 - `Sources/BlendKit`: Swift. Library on disk, track loading, song structure, transition planning, the live session.
 - `Sources/Blend`: the app. SwiftUI for the chrome, Core Animation layers for platters and waveforms, raw `NSTouch` for the trackpad.
 - `Sources/blendtool`: offline tests. `selftest` checks beat sync and CPU cost, `grid` measures how tightly the drums sit on the beat grid, `automix` renders a scripted session without audio output.
@@ -38,7 +39,7 @@ Built for one MacBook and one listener. The song library is private and is not p
 ./build.sh install
 ```
 
-Needs Xcode 26 on macOS 26. The library lives in `~/Music/Blend/Library`, one folder per song with `vocals.m4a`, `drums.m4a`, `bass.m4a`, `other.m4a`, optional `beats.json` and `cover.jpg`. A folder with a single `mix.*` file plays without stems. Dropping audio files on the window adds them that way.
+Needs Xcode 26 on macOS 26. The library lives in `~/Music/Blend/Library`, one folder per song with `vocals.m4a`, `drums.m4a`, `bass.m4a`, `other.m4a`, optional `beats.json` and `cover.jpg`. A folder with a single `mix.*` file plays without stems. Dropping audio files on the window adds them that way. When the analyzer cannot tell where the bar starts (music without drums), `meta.json` may carry `"downbeat": <seconds>`, the time of any first beat of a bar.
 
 ## Credits
 

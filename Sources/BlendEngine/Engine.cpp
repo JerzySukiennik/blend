@@ -185,7 +185,7 @@ struct Deck {
     int mode = MODE_SLAVED;
     double offset = 0, pos = 0, rate = 1, pitch = 0;
 
-    bool stretching = false;
+    bool stretching = false, bendOn = false;
     int64_t fed = 0;
     Stretch st[BE_STEMS];
     bool stOn[BE_STEMS] = {false, false, false, false};
@@ -243,10 +243,10 @@ struct Deck {
         loop = rolling = false;
     }
 
-    void applyPitch() {
+    void applyPitch(float bend = 0.0f) {
         for (int s = 0; s < BE_STEMS; ++s) {
             bool shift = track == nullptr || track->stems == 1 || s != kDrums;
-            st[s].setTransposeSemitones(shift ? (float)pitch : 0.0f);
+            st[s].setTransposeSemitones((shift ? (float)pitch : 0.0f) + bend);
         }
     }
 
@@ -342,7 +342,15 @@ struct Deck {
                 rate = slaved;
                 double want0 = track->firstBeat + (beat0 + offset) * f;
                 double want1 = track->firstBeat + (beat1 + offset) * f;
-                bool need = std::fabs(slaved - 1.0) > 1e-7 || pitch != 0.0;
+                bool bent = !track->bend.empty();
+                bool need = std::fabs(slaved - 1.0) > 1e-7 || pitch != 0.0 || bent;
+                if (bent) {
+                    applyPitch(track->bendAt(want0));
+                    bendOn = true;
+                } else if (bendOn) {
+                    applyPitch();
+                    bendOn = false;
+                }
                 if (need != stretching) {
                     beginGhost();
                     if (need) {

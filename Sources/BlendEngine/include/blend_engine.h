@@ -139,6 +139,9 @@ typedef struct {
     double rateHigh;
     int32_t anchors;
     int32_t applied;
+    int32_t half;
+    int32_t bent;
+    int32_t lead;
 } be_warp;
 
 int32_t be_track_straighten(be_track *t, double *beatTimes, int32_t nBeats, double *downbeatTimes, int32_t nDownbeats, int32_t decide, be_warp *info);

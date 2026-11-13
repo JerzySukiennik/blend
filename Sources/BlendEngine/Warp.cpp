@@ -1,4 +1,4 @@
-// Blend engine: straightens a wandering tempo (live drummers) by gently resampling every stem onto a constant beat grid.
+// Blend engine: straightens a wandering tempo (live drummers, orchestras) by resampling every stem onto a constant beat grid.
 #include "Track.h"
 #include "blend_engine.h"
 
@@ -13,17 +13,37 @@ namespace {
 constexpr double kRate = 44100.0;
 constexpr int kTaps = 32, kHalf = kTaps / 2, kPhases = 4096;
 constexpr int kReach = 8, kStep = 4;
-constexpr double kRateLimit = 0.05, kMinDrift = 0.025;
+constexpr double kRateLimit = 0.14, kSafe = 0.05, kGentle = 0.03, kMinDrift = 0.025;
 constexpr float kBroken = 0.88f, kProof = 0.85f, kTighter = 0.05f;
 
 struct Map {
-    std::vector<double> src, dst;
+    std::vector<double> src, dst, slope;
+
+    void finish() {
+        size_t n = dst.size();
+        slope.assign(n, 1.0);
+        for (size_t j = 1; j + 1 < n; ++j) {
+            double a = (src[j] - src[j - 1]) / (dst[j] - dst[j - 1]), b = (src[j + 1] - src[j]) / (dst[j + 1] - dst[j]);
+            slope[j] = 0.5 * (a + b);
+        }
+    }
+
+    double source(size_t j, double d, double *speed = nullptr) const {
+        double h = dst[j + 1] - dst[j], u = (d - dst[j]) / h, u2 = u * u, u3 = u2 * u;
+        if (speed) *speed = (6 * u2 - 6 * u) * (src[j] - src[j + 1]) / h + (3 * u2 - 4 * u + 1) * slope[j] + (3 * u2 - 2 * u) * slope[j + 1];
+        return (2 * u3 - 3 * u2 + 1) * src[j] + (u3 - 2 * u2 + u) * h * slope[j] + (3 * u2 - 2 * u3) * src[j + 1] + (u3 - u2) * h * slope[j + 1];
+    }
 
     double forward(double t) const {
         if (t <= src.front()) return t + dst.front() - src.front();
         if (t >= src.back()) return t + dst.back() - src.back();
         size_t j = (size_t)(std::upper_bound(src.begin(), src.end(), t) - src.begin()) - 1;
-        return dst[j] + (t - src[j]) / (src[j + 1] - src[j]) * (dst[j + 1] - dst[j]);
+        double lo = dst[j], hi = dst[j + 1];
+        for (int i = 0; i < 40; ++i) {
+            double mid = 0.5 * (lo + hi);
+            (source(j, mid) < t ? lo : hi) = mid;
+        }
+        return 0.5 * (lo + hi);
     }
 };
 
@@ -58,16 +78,16 @@ struct Sinc {
     const float *row(int p) const { return &table[(size_t)p * kTaps]; }
 };
 
-void walk(const double *bt, int n, int from, int dir, double T, std::vector<double> &k, std::vector<double> &t) {
+void walk(const double *bt, int n, int from, int dir, double T, double unit, std::vector<double> &k, std::vector<double> &t) {
     double lastK = 0, lastT = bt[from];
     for (int i = from + dir; i >= 0 && i < n; i += dir) {
-        double gap = std::fabs(bt[i] - lastT), steps = std::round(gap / T);
-        if (steps < 1) continue;
-        double tol = std::min(0.45, 0.2 + 0.012 * steps) * T;
+        double gap = std::fabs(bt[i] - lastT), steps = std::round(gap / T / unit) * unit;
+        if (steps < unit) continue;
+        double tol = std::min(0.45, (unit < 1 ? 0.11 : 0.2) + 0.012 * steps) * T;
         if (std::fabs(gap - steps * T) > tol) {
             if (gap < 12.0) continue;
         } else if (steps <= 2) {
-            T += 0.25 * (gap / steps - T);
+            T += (steps < 1 ? 0.1 : 0.25) * (gap / steps - T);
         }
         lastK += dir * steps;
         lastT = bt[i];
@@ -80,26 +100,31 @@ bool plan(const double *bt, int n, Map &map, be_warp &info) {
     if (n < 64) return false;
     std::vector<double> d;
     for (int i = 1; i < n; ++i) d.push_back(bt[i] - bt[i - 1]);
-    std::nth_element(d.begin(), d.begin() + d.size() / 2, d.end());
-    double T0 = d[d.size() / 2];
+    std::vector<double> sorted(d);
+    std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2, sorted.end());
+    double T0 = sorted[sorted.size() / 2];
     if (T0 < 0.2 || T0 > 1.2) return false;
 
-    int start = -1, run = 0;
-    for (int i = 1; i < n && start < 0; ++i) {
-        run = std::fabs((bt[i] - bt[i - 1]) - T0) < 0.09 * T0 ? run + 1 : 0;
-        if (run >= 8) start = i - 8;
+    int start = -1, run = 0, halves = 0;
+    for (int i = 1; i < n; ++i) {
+        double gap = d[(size_t)i - 1];
+        if (std::fabs(gap - 0.5 * T0) < 0.1 * T0) ++halves;
+        run = std::fabs(gap - T0) < 0.09 * T0 ? run + 1 : 0;
+        if (run >= 8 && start < 0) start = i - 8;
     }
     if (start < 0) return false;
+    double unit = halves * 100 >= (n - 1) * 15 ? 0.5 : 1.0;
+    info.half = unit < 1 ? 1 : 0;
 
     std::vector<double> kb, tb, k, t;
-    walk(bt, n, start, -1, T0, kb, tb);
+    walk(bt, n, start, -1, T0, unit, kb, tb);
     for (size_t i = kb.size(); i-- > 0;) {
         k.push_back(kb[i]);
         t.push_back(tb[i]);
     }
     k.push_back(0);
     t.push_back(bt[start]);
-    walk(bt, n, start, 1, T0, k, t);
+    walk(bt, n, start, 1, T0, unit, k, t);
     if ((int)k.size() < n * 7 / 10) return false;
 
     std::vector<double> K, tau;
@@ -131,6 +156,10 @@ bool plan(const double *bt, int n, Map &map, be_warp &info) {
     map.dst.clear();
     for (size_t j = 0; j < K.size(); ++j) map.dst.push_back(tau.front() + (K[j] - K.front()) * a);
     map.dst.back() = tau.back();
+    for (size_t j = 0; j + 1 < K.size(); ++j) {
+        if (map.src[j + 1] <= map.src[j]) return false;
+    }
+    map.finish();
 
     info.anchors = (int32_t)K.size();
     info.drift = 0;
@@ -138,13 +167,23 @@ bool plan(const double *bt, int n, Map &map, be_warp &info) {
     for (size_t j = 0; j < K.size(); ++j) {
         info.drift = std::max(info.drift, std::fabs(map.src[j] - map.dst[j]));
         if (j + 1 == K.size()) break;
-        double span = map.src[j + 1] - map.src[j];
-        if (span <= 0) return false;
-        double rate = span / (map.dst[j + 1] - map.dst[j]);
-        info.rateLow = std::min(info.rateLow, rate);
-        info.rateHigh = std::max(info.rateHigh, rate);
+        for (int q = 0; q <= 8; ++q) {
+            double speed = 1;
+            map.source(j, map.dst[j] + (map.dst[j + 1] - map.dst[j]) * q / 8.0, &speed);
+            info.rateLow = std::min(info.rateLow, speed);
+            info.rateHigh = std::max(info.rateHigh, speed);
+        }
     }
     return info.rateLow > 1 - kRateLimit && info.rateHigh < 1 + kRateLimit;
+}
+
+float share(const double *bt, int n, double T, double first, double unit) {
+    int good = 0;
+    for (int i = 0; i < n; ++i) {
+        double ph = (bt[i] - first) / (T * unit);
+        if (std::fabs(ph - std::round(ph)) * T * unit < 0.03) ++good;
+    }
+    return n > 0 ? (float)good / n : 0;
 }
 
 inline int16_t pack(float v) {
@@ -158,11 +197,9 @@ void resample(const int16_t *in, int16_t *out, int64_t frames, const Map &map, c
     std::memcpy(out, in, (size_t)head * 2 * sizeof(int16_t));
     if (tail < frames) std::memcpy(out + tail * 2, in + tail * 2, (size_t)(frames - tail) * 2 * sizeof(int16_t));
     for (size_t j = 0; j + 1 < map.dst.size(); ++j) {
-        double d0 = map.dst[j] * kRate, s0 = map.src[j] * kRate;
-        double slope = (map.src[j + 1] - map.src[j]) / (map.dst[j + 1] - map.dst[j]);
-        int64_t n0 = clampFrame(d0), n1 = clampFrame(map.dst[j + 1] * kRate);
+        int64_t n0 = clampFrame(map.dst[j] * kRate), n1 = clampFrame(map.dst[j + 1] * kRate);
         for (int64_t n = n0; n < n1; ++n) {
-            double pos = s0 + (n - d0) * slope;
+            double pos = map.source(j, (double)n / kRate) * kRate;
             int64_t i = (int64_t)std::floor(pos), b = i - (kHalf - 1);
             const float *w = sinc.row((int)((pos - i) * kPhases + 0.5));
             float l0 = 0, l1 = 0, r0 = 0, r1 = 0;
@@ -188,22 +225,42 @@ void resample(const int16_t *in, int16_t *out, int64_t frames, const Map &map, c
     }
 }
 
-float tightness(const int16_t *pcm, int64_t frames, double T, double t0) {
-    const int hop = 64, lag = 6;
+std::vector<float> bendCurve(const Map &map, int64_t frames) {
+    std::vector<float> bend((size_t)(frames >> kBendShift) + 1, 0.0f);
+    size_t j = 0;
+    for (size_t b = 0; b < bend.size(); ++b) {
+        double d = ((double)(b << kBendShift) + (1 << (kBendShift - 1))) / kRate;
+        if (d <= map.dst.front() || d >= map.dst.back()) continue;
+        while (j + 2 < map.dst.size() && d >= map.dst[j + 1]) ++j;
+        double speed = 1;
+        map.source(j, d, &speed);
+        bend[b] = (float)(-12.0 * std::log2(std::max(0.5, speed)));
+    }
+    return bend;
+}
+
+float tightness(const int16_t *pcm, int64_t frames, double T, double t0, bool broad) {
+    const int hop = 64, lag = broad ? 16 : 6;
     size_t n = (size_t)(frames / hop);
     if (n < 64 || T <= 0) return 0;
     std::vector<float> env(n);
     const float k = 1.0f - std::exp(-2.0f * (float)M_PI * 130.0f / (float)kRate);
-    float a = 0, b = 0;
+    float a = 0, b = 0, last = 0;
     for (size_t m = 0; m < n; ++m) {
         float acc = 0;
         const int16_t *x = pcm + m * hop * 2;
         for (int i = 0; i < hop; ++i) {
-            a += k * ((float)x[2 * i] + (float)x[2 * i + 1] - a);
-            b += k * (a - b);
-            acc += std::fabs(b);
+            float v = (float)x[2 * i] + (float)x[2 * i + 1];
+            if (broad) {
+                acc += std::fabs(v - last);
+                last = v;
+            } else {
+                a += k * (v - a);
+                b += k * (a - b);
+                acc += std::fabs(b);
+            }
         }
-        env[m] = acc;
+        env[m] = broad ? std::sqrt(acc) : acc;
     }
     double per = T * kRate / hop;
     long reach = (long)(0.22 * per);
@@ -244,7 +301,7 @@ float tightness(const int16_t *pcm, int64_t frames, double T, double t0) {
 
 }
 
-float be_kick_tightness(const int16_t *pcm, int64_t frames, double period, double first) { return tightness(pcm, frames, period, first); }
+float be_kick_tightness(const int16_t *pcm, int64_t frames, double period, double first, bool broad) { return tightness(pcm, frames, period, first, broad); }
 
 extern "C" {
 
@@ -257,7 +314,10 @@ int32_t be_track_straighten(be_track *t, double *beatTimes, int32_t nBeats, doub
         if (info) *info = w;
         return applied;
     };
-    if (!t || !beatTimes || nBeats < 64) return done(0);
+    if (!t) return done(0);
+    int lead = be_lead_stem(t);
+    w.lead = lead;
+    if (!beatTimes || nBeats < 64) return done(0);
 
     double T0 = 0, p0 = 0, T1 = 0, p1 = 0;
     bool fitted = be_fit_grid(beatTimes, nBeats, T0, p0, w.before);
@@ -266,22 +326,31 @@ int32_t be_track_straighten(be_track *t, double *beatTimes, int32_t nBeats, doub
 
     Map map;
     if (!plan(beatTimes, nBeats, map, w)) return done(0);
+    double unit = w.half ? 0.5 : 1.0;
+    if (fitted && w.half) w.before = share(beatTimes, nBeats, T0, p0, unit);
     std::vector<double> moved(beatTimes, beatTimes + nBeats);
     for (double &b : moved) b = map.forward(b);
     if (!be_fit_grid(moved.data(), nBeats, T1, p1, w.after)) return done(0);
+    if (w.half) w.after = share(moved.data(), nBeats, T1, p1, unit);
+    w.bent = std::max(1 - w.rateLow, w.rateHigh - 1) > kGentle ? 1 : 0;
 
     static const Sinc sinc;
-    int lead = t->stems == BE_STEMS ? 1 : 0;
     std::vector<int16_t> fresh[BE_STEMS];
     if (decide) {
         if (w.drift < kMinDrift || w.after < w.before) return done(0);
-        fresh[lead].resize(t->pcm[lead].size());
-        resample(t->pcm[lead].data(), fresh[lead].data(), t->frames, map, sinc);
-        w.tightBefore = fitted ? tightness(t->pcm[lead].data(), t->frames, T0, p0) : 0;
-        w.tightAfter = tightness(fresh[lead].data(), t->frames, T1, p1);
+        bool large = std::max(1 - w.rateLow, w.rateHigh - 1) > kSafe;
+        if (large && !(w.before < 0.7f && w.after >= w.before + 0.25f)) return done(0);
+        std::vector<int16_t> mix, trial;
+        const int16_t *was = lead >= 0 ? t->pcm[lead].data() : (mix = be_mixdown(t)).data();
+        std::vector<int16_t> &now = lead >= 0 ? fresh[lead] : trial;
+        now.resize((size_t)t->frames * 2);
+        resample(was, now.data(), t->frames, map, sinc);
+        w.tightBefore = fitted ? tightness(was, t->frames, T0 * unit, p0, lead < 0) : 0;
+        w.tightAfter = tightness(now.data(), t->frames, T1 * unit, p1, lead < 0);
         bool tighter = w.tightAfter >= w.tightBefore + kTighter;
         bool repaired = w.before < kBroken && w.after >= std::max(w.before + 0.05f, kProof) && w.tightAfter >= w.tightBefore - 0.02f;
         if (!tighter && !repaired) return done(0);
+        if (w.bent) be_note_key(t);
     }
 
     std::vector<std::thread> jobs;
@@ -294,6 +363,7 @@ int32_t be_track_straighten(be_track *t, double *beatTimes, int32_t nBeats, doub
     }
     for (std::thread &job : jobs) job.join();
     for (int s = 0; s < t->stems; ++s) t->pcm[s].swap(fresh[s]);
+    if (w.bent) t->bend = bendCurve(map, t->frames);
 
     std::copy(moved.begin(), moved.end(), beatTimes);
     for (int i = 0; downbeatTimes && i < nDownbeats; ++i) downbeatTimes[i] = map.forward(downbeatTimes[i]);

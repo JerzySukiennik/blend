@@ -136,8 +136,9 @@ func describe(_ t: LoadedTrack) -> String {
     }.joined()
     let vox = (0..<s.bars).map { s.level[0][$0] > 0.4 ? "v" : " " }.joined()
     let w = t.warp
-    let numbers = String(format: "tracker %.2f -> %.2f, kicks %.2f -> %.2f, drift %.0f ms, speed %.3f..%.3f", w.before, w.after, w.tightBefore, w.tightAfter, w.drift * 1000, w.rateLow, w.rateHigh)
-    let warp = w.applied == 1 ? "\n   straightened: " + numbers : w.anchors > 0 ? "\n   left as is: " + numbers : ""
+    let numbers = String(format: "tracker %.2f -> %.2f, kicks %.2f -> %.2f, drift %.0f ms, speed %.3f..%.3f%@%@", w.before, w.after, w.tightBefore, w.tightAfter, w.drift * 1000, w.rateLow, w.rateHigh,
+                         w.half == 1 ? ", half beats" : "", w.bent == 1 ? ", pitch corrected" : "")
+    let warp = (w.lead < 0 ? "\n   no drum stem, rhythm read from the full mix" : "") + (w.applied == 1 ? "\n   straightened: " + numbers : w.anchors > 0 ? "\n   left as is: " + numbers : "")
     return String(format: "%-34@ %7.3f BPM  key %-3@ (%.2f)  conf %.2f  gain %.2f  first %.0f  bar+%d phrase+%d  bars %d  drops [%@]  vocals [%@]  full@%d last@%d",
                   t.info.title as NSString, a.bpm, a.keyName as NSString, a.keyStrength, a.confidence, a.gain, a.firstBeatFrame, s.barPhase, s.phrasePhase, s.bars,
                   bars(s.drops) as NSString, bars(s.vocalStarts) as NSString, s.firstFull, s.lastStrong) + "\n   " + line + "\n   " + vox + warp
@@ -145,28 +146,38 @@ func describe(_ t: LoadedTrack) -> String {
 
 func tightness(_ t: LoadedTrack) -> String {
     let hop = 64, frames = Int(be_track_frames(t.raw))
-    guard let p = be_track_stem(t.raw, t.stems == 4 ? 1 : 0), frames > hop * 16 else { return "" }
+    let wanted: [Int32] = t.stems == 4 ? (t.structure.stemPresent[1] ? [1] : [0, 1, 2, 3]) : [0]
+    let sources = wanted.compactMap { be_track_stem(t.raw, $0) }
+    guard !sources.isEmpty, frames > hop * 16 else { return "" }
     var env = [Float](repeating: 0, count: frames / hop)
     let k = 1 - exp(-2 * Float.pi * 130 / 44100)
-    var a: Float = 0, b: Float = 0
+    let broad = sources.count > 1, lag = broad ? 16 : 6
+    var a: Float = 0, b: Float = 0, last: Float = 0
     for m in 0..<env.count {
         var acc: Float = 0
         for i in 0..<hop {
             let j = (m * hop + i) * 2
-            a += k * (Float(p[j]) + Float(p[j + 1]) - a)
-            b += k * (a - b)
-            acc += abs(b)
+            var v: Float = 0
+            for p in sources { v += Float(p[j]) + Float(p[j + 1]) }
+            if broad {
+                acc += abs(v - last)
+                last = v
+            } else {
+                a += k * (v - a)
+                b += k * (a - b)
+                acc += abs(b)
+            }
         }
-        env[m] = acc / Float(hop * 65536)
+        env[m] = broad ? acc.squareRoot() : acc / Float(hop * 65536)
     }
     var hits: [(beat: Int, off: Double, peak: Float)] = []
     let reach = Int(0.22 * t.fpb / Double(hop))
     for b in 0..<t.analysis.beats {
         let c = Int(((t.analysis.firstBeatFrame + Double(b) * t.fpb) / Double(hop)).rounded())
-        guard c - reach >= 6, c + reach < env.count else { continue }
+        guard c - reach >= lag, c + reach < env.count else { continue }
         var best = c, top: Float = 0
         for m in (c - reach)...(c + reach) {
-            let rise = env[m] - env[m - 6]
+            let rise = env[m] - env[m - lag]
             if rise > top {
                 top = rise
                 best = m

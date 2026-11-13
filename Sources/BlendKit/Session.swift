@@ -368,7 +368,7 @@ public final class Session {
         var tr = Transition(style: .blend, from: f, to: t, startBeat: sa.beat(ofBar: startBar) - da.offset, length: length, toTrackBeat: sb.beat(ofBar: bStartBar),
                             tempoFrom: s.masterBpm, tempoTo: b.analysis.bpm, tag: nextTag())
         tr.toWasPlaying = toPlaying
-        if !toPlaying && (ratio > 1.09 || ratio < 0.92) {
+        if !toPlaying && (ratio > 1.11 || ratio < 0.9) {
             tr.style = .echo
             return tr
         }
@@ -541,7 +541,8 @@ public final class Session {
             engine.ramp(deck: n, Stem.vocals.param, to: 1, start: at, end: at + 0.5, tag: tag)
             engine.ramp(deck: c, Stem.vocals.param, to: 0, start: at - 1, end: at, tag: tag)
         } else {
-            for st in [Stem.drums, .bass, .music] {
+            let swapped: [Stem] = sa.stemPresent[Stem.vocals.rawValue] ? [.drums, .bass, .music] : [.drums, .bass]
+            for st in swapped {
                 engine.ramp(deck: n, st.param, to: 1, start: at, end: at + 0.06, tag: tag)
                 engine.ramp(deck: c, st.param, to: 0, start: at - 0.12, end: at, tag: tag)
             }

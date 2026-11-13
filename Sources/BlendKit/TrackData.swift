@@ -5,7 +5,7 @@ import BlendEngine
 import Foundation
 
 public struct Analysis: Codable {
-    public static let currentVersion = 9
+    public static let currentVersion = 15
 
     public var version = Analysis.currentVersion
     public var bpm: Double
@@ -248,9 +248,13 @@ public final class LoadedTrack {
             analysis = cached
             if cached.straightened { be_track_straighten(raw, &beats, Int32(beats.count), &downbeats, Int32(downbeats.count), 0, &warp) }
         } else {
+            let hint = downbeatHint(info)
+            if let hint { downbeats.append(hint) }
             if straightens { be_track_straighten(raw, &beats, Int32(beats.count), &downbeats, Int32(downbeats.count), 1, &warp) }
-            analysis = try analyze(info, raw: raw, frames: frames, beats: beats, downbeats: downbeats)
+            let marked = hint == nil ? nil : downbeats.removeLast()
+            analysis = try analyze(info, raw: raw, frames: frames, beats: beats, downbeats: downbeats, marked: marked)
             analysis.straightened = warp.applied == 1
+            if warp.applied == 1 { analysis.confidence = max(analysis.confidence, warp.after) }
             fresh = true
             if straightens, let data = try? JSONEncoder().encode(analysis) { try? data.write(to: info.analysisURL) }
         }
@@ -269,15 +273,32 @@ public final class LoadedTrack {
         return LoadedTrack(info: info, raw: raw, analysis: analysis, wave: wave, warp: warp)
     }
 
-    static func analyze(_ info: TrackInfo, raw: OpaquePointer, frames: Int, beats: [Double], downbeats: [Double]) throws -> Analysis {
+    static func downbeatHint(_ info: TrackInfo) -> Double? {
+        guard let data = try? Data(contentsOf: info.folder.appendingPathComponent("meta.json")),
+              let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return (meta["downbeat"] as? NSNumber)?.doubleValue
+    }
+
+    static func analyze(_ info: TrackInfo, raw: OpaquePointer, frames: Int, beats: [Double], downbeats: [Double], marked: Double?) throws -> Analysis {
         var res = be_analysis()
         guard be_analyze(raw, beats, Int32(beats.count), downbeats, Int32(downbeats.count), &res) == 1 else {
             throw NSError(domain: "Blend", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not find the beat in \(info.title)"])
         }
+        var first = res.firstBeatFrame, barPhase = Int(res.barPhase)
+        if let marked {
+            let fpb = 44100 * 60 / res.bpm
+            var x = (marked * 44100 - first) / fpb
+            if abs(x - x.rounded()) > 0.25 {
+                first += fpb / 2
+                if first >= fpb { first -= fpb }
+                x = (marked * 44100 - first) / fpb
+            }
+            barPhase = ((Int(x.rounded()) % 4) + 4) % 4
+        }
         var energy = [Float](repeating: 0, count: Int(res.beatCount) * 4)
-        let n = be_beat_energy(raw, res.bpm, res.firstBeatFrame, &energy, res.beatCount)
+        let n = be_beat_energy(raw, res.bpm, first, &energy, res.beatCount)
         energy.removeLast(energy.count - Int(n) * 4)
-        return Analysis(bpm: res.bpm, firstBeatFrame: res.firstBeatFrame, barPhase: Int(res.barPhase), phrasePhase: Int(res.phrasePhase), key: Int(res.key), keyStrength: res.keyStrength,
+        return Analysis(bpm: res.bpm, firstBeatFrame: first, barPhase: barPhase, phrasePhase: Int(res.phrasePhase), key: Int(res.key), keyStrength: res.keyStrength,
                         gain: res.gain, confidence: res.gridConfidence, beats: Int(n), frames: frames, energy: energy)
     }
 
