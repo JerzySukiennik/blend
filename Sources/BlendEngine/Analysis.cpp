@@ -130,7 +130,7 @@ std::vector<double> onsetBeats(const std::vector<float> &osf, double fps, double
     return beats;
 }
 
-bool fitGrid(const double *bt, int n, double &T, double &t0, float &conf) {
+bool fitGrid(const double *bt, int n, double &T, double &t0, float &conf, double *roundT = nullptr, double *roundT0 = nullptr) {
     if (n < 12) return false;
     std::vector<double> d;
     for (int i = 1; i < n; ++i) d.push_back(bt[i] - bt[i - 1]);
@@ -152,6 +152,7 @@ bool fitGrid(const double *bt, int n, double &T, double &t0, float &conf) {
     }
     if (bestLen < 8) return false;
     double a = (bt[bestStart + bestLen - 1] - bt[bestStart]) / (bestLen - 1), b = bt[bestStart];
+    if (60.0 / a < 85.0) a *= 0.5;
     double centre = 0.5 * (bt[bestStart] + bt[bestStart + bestLen - 1]);
     double reach = std::max(8.0, 0.5 * (bt[bestStart + bestLen - 1] - bt[bestStart]));
     double span = bt[n - 1] - bt[0];
@@ -178,16 +179,17 @@ bool fitGrid(const double *bt, int n, double &T, double &t0, float &conf) {
         if (reach > span * 2) break;
         reach *= 1.6;
     }
-    double bpm = 60.0 / a, snapped = std::round(bpm);
-    if (std::fabs(bpm - snapped) < 0.02) {
-        a = 60.0 / snapped;
+    double bpm = 60.0 / a, whole = std::round(bpm);
+    if (roundT) *roundT = 0;
+    if (roundT && roundT0 && std::fabs(bpm - whole) < 0.03) {
         std::vector<double> r;
         for (int i = 0; i < n; ++i) {
-            if (keep[i]) r.push_back(bt[i] - a * k[i]);
+            if (keep[i]) r.push_back(bt[i] - 60.0 / whole * k[i]);
         }
         if (!r.empty()) {
             std::nth_element(r.begin(), r.begin() + r.size() / 2, r.end());
-            b = r[r.size() / 2];
+            *roundT = 60.0 / whole;
+            *roundT0 = r[r.size() / 2];
         }
     }
     int good = 0;
@@ -341,6 +343,8 @@ std::vector<float> beatEnergy(const be_track *t, double fpb, double first, int &
 
 }
 
+bool be_fit_grid(const double *beatTimes, int n, double &period, double &first, float &confidence) { return fitGrid(beatTimes, n, period, first, confidence); }
+
 extern "C" {
 
 be_track *be_track_create(int32_t stems, int64_t frames) {
@@ -375,21 +379,32 @@ int32_t be_analyze(const be_track *t, const double *beatTimes, int32_t nBeats, c
     bool stems = t->stems == BE_STEMS;
     std::vector<float> rhythm = mono(t, stems ? (1u << kDrums) : 1u);
 
-    double T = 0, t0 = 0;
+    double T = 0, t0 = 0, roundT = 0, roundT0 = 0;
     float conf = 0;
-    bool ok = nBeats >= 12 && fitGrid(beatTimes, nBeats, T, t0, conf);
+    bool ok = nBeats >= 12 && fitGrid(beatTimes, nBeats, T, t0, conf, &roundT, &roundT0) && conf >= 0.7f;
     if (!ok) {
         double fps = 0;
         std::vector<float> osf = onsetStrength(rhythm, 256, fps);
         if (osf.size() < 400) return 0;
         double bpm0 = coarseTempo(osf, fps);
         std::vector<double> ob = onsetBeats(osf, fps, bpm0);
-        if (!fitGrid(ob.data(), (int)ob.size(), T, t0, conf)) {
+        roundT = 0;
+        if (!fitGrid(ob.data(), (int)ob.size(), T, t0, conf, &roundT, &roundT0)) {
             T = 60.0 / bpm0;
             t0 = ob.empty() ? 0.0 : ob[0];
             conf = 0.2f;
+            roundT = 0;
         }
         nDownbeats = 0;
+    }
+    if (roundT > 0) {
+        const int16_t *lead = t->pcm[stems ? kDrums : 0].data();
+        float whole = be_kick_tightness(lead, t->frames, roundT, roundT0), fitted = be_kick_tightness(lead, t->frames, T, t0);
+        bool heard = whole > 0 || fitted > 0, close = std::fabs(60.0 / roundT - 60.0 / T) < 0.01;
+        if (heard ? whole >= fitted - 0.01f : close) {
+            T = roundT;
+            t0 = roundT0;
+        }
     }
     t0 = refinePhase(rhythm, t0, T, !stems);
     double shift = std::floor(t0 / T);

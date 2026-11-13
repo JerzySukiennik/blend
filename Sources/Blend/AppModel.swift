@@ -32,9 +32,10 @@ final class AppModel {
     static let tutorialSteps = 6
 
     var filtered: [TrackInfo] {
-        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
+        func plain(_ s: String) -> String { s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).filter { $0.isLetter || $0.isNumber || $0 == " " } }
+        let q = plain(search.trimmingCharacters(in: .whitespaces))
         guard !q.isEmpty else { return session.library }
-        return session.library.filter { $0.title.lowercased().contains(q) || $0.artist.lowercased().contains(q) }
+        return session.library.filter { plain($0.title).contains(q) || plain($0.artist).contains(q) }
     }
 
     func start(silent: Bool = false) {

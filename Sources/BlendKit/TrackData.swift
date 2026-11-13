@@ -5,7 +5,7 @@ import BlendEngine
 import Foundation
 
 public struct Analysis: Codable {
-    public static let currentVersion = 6
+    public static let currentVersion = 9
 
     public var version = Analysis.currentVersion
     public var bpm: Double
@@ -20,6 +20,7 @@ public struct Analysis: Codable {
     public var frames: Int
     public var energy: [Float]
     public var beatShift = 0
+    public var straightened = false
 
     public var seconds: Double { Double(frames) / 44100 }
     public var keyName: String { Key.name(key) }
@@ -203,17 +204,20 @@ public final class LoadedTrack {
     public let analysis: Analysis
     public let structure: Structure
     public let wave: [UInt8]
+    public let warp: be_warp
     public static let wavePoints = 120.0
+    public static var straightens = true
 
     public var stems: Int { info.files.count }
     public var fpb: Double { 44100 * 60 / analysis.bpm }
     public func beat(atFrame frame: Double) -> Double { (frame - analysis.firstBeatFrame) / fpb }
 
-    init(info: TrackInfo, raw: OpaquePointer, analysis: Analysis, wave: [UInt8]) {
+    init(info: TrackInfo, raw: OpaquePointer, analysis: Analysis, wave: [UInt8], warp: be_warp) {
         self.info = info
         self.raw = raw
         self.analysis = analysis
         self.wave = wave
+        self.warp = warp
         structure = Structure(analysis, stems: info.files.count)
     }
 
@@ -232,34 +236,40 @@ public final class LoadedTrack {
         for (i, file) in files.enumerated() {
             try decode(file, into: be_track_stem(raw, Int32(i))!, capacity: frames)
         }
-        var analysis: Analysis
-        if let cached = cachedAnalysis(info), cached.frames == frames {
-            analysis = cached
-        } else {
-            analysis = try analyze(info, raw: raw, frames: frames)
-            if let data = try? JSONEncoder().encode(analysis) { try? data.write(to: info.analysisURL) }
-        }
-        be_track_set_grid(raw, analysis.bpm, analysis.firstBeatFrame)
-        be_track_set_gain(raw, analysis.gain)
-        var wave: [UInt8]
-        let expected = Int(Double(frames) / 44100 * wavePoints) * 4
-        if let data = try? Data(contentsOf: info.waveURL), data.count == expected {
-            wave = [UInt8](data)
-        } else {
-            wave = [UInt8](repeating: 0, count: expected)
-            let n = be_waveform(raw, wavePoints, &wave, Int32(expected / 4))
-            wave.removeLast(wave.count - Int(n) * 4)
-            try? Data(wave).write(to: info.waveURL)
-        }
-        return LoadedTrack(info: info, raw: raw, analysis: analysis, wave: wave)
-    }
-
-    static func analyze(_ info: TrackInfo, raw: OpaquePointer, frames: Int) throws -> Analysis {
         var beats: [Double] = [], downbeats: [Double] = []
         if let data = try? Data(contentsOf: info.beatsURL), let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             beats = (json["beats"] as? [NSNumber])?.map(\.doubleValue) ?? []
             downbeats = (json["downbeats"] as? [NSNumber])?.map(\.doubleValue) ?? []
         }
+        var warp = be_warp()
+        var analysis: Analysis
+        var fresh = false
+        if straightens, let cached = cachedAnalysis(info), cached.frames == frames {
+            analysis = cached
+            if cached.straightened { be_track_straighten(raw, &beats, Int32(beats.count), &downbeats, Int32(downbeats.count), 0, &warp) }
+        } else {
+            if straightens { be_track_straighten(raw, &beats, Int32(beats.count), &downbeats, Int32(downbeats.count), 1, &warp) }
+            analysis = try analyze(info, raw: raw, frames: frames, beats: beats, downbeats: downbeats)
+            analysis.straightened = warp.applied == 1
+            fresh = true
+            if straightens, let data = try? JSONEncoder().encode(analysis) { try? data.write(to: info.analysisURL) }
+        }
+        be_track_set_grid(raw, analysis.bpm, analysis.firstBeatFrame)
+        be_track_set_gain(raw, analysis.gain)
+        var wave: [UInt8]
+        let expected = Int(Double(frames) / 44100 * wavePoints) * 4
+        if !fresh, let data = try? Data(contentsOf: info.waveURL), data.count == expected {
+            wave = [UInt8](data)
+        } else {
+            wave = [UInt8](repeating: 0, count: expected)
+            let n = be_waveform(raw, wavePoints, &wave, Int32(expected / 4))
+            wave.removeLast(wave.count - Int(n) * 4)
+            if straightens { try? Data(wave).write(to: info.waveURL) }
+        }
+        return LoadedTrack(info: info, raw: raw, analysis: analysis, wave: wave, warp: warp)
+    }
+
+    static func analyze(_ info: TrackInfo, raw: OpaquePointer, frames: Int, beats: [Double], downbeats: [Double]) throws -> Analysis {
         var res = be_analysis()
         guard be_analyze(raw, beats, Int32(beats.count), downbeats, Int32(downbeats.count), &res) == 1 else {
             throw NSError(domain: "Blend", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not find the beat in \(info.title)"])

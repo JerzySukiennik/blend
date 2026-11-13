@@ -8,6 +8,7 @@ Built for one MacBook and one listener. The song library is private and is not p
 
 - **Two decks, four stems each**: vocal, drums, bass, music. Every stem can be muted on its own.
 - **Automix**: queue songs, Blend picks a phrase boundary and blends with a bass swap in the middle. Space forces the mix from the next four-bar boundary.
+- **Different tempos**: within about 8% the tempo glides from one song to the other during the blend and the pitch stays put. Further apart, the mix becomes an echo cut. Songs played by a live drummer are straightened onto a steady grid when they load.
 - **Moves** (always quantized to the bar):
   - `space` MIX: stem blend into the next song
   - `V` VOCAL: next song's vocal over the current beat, key matched
@@ -26,10 +27,10 @@ Built for one MacBook and one listener. The song library is private and is not p
 
 ## Layout
 
-- `Sources/BlendEngine`: C++ audio engine. Decks are slaved to a master beat clock, stems are time-stretched separately (Signalsmith Stretch), automation is scheduled in beats and fired sample-accurately. Also the analyzer: beat grid, downbeat and phrase phase, key, loudness.
+- `Sources/BlendEngine`: C++ audio engine. Decks are slaved to a master beat clock, stems are time-stretched separately (Signalsmith Stretch), automation is scheduled in beats and fired sample-accurately. Also the analyzer (beat grid, downbeat and phrase phase, key, loudness) and the tempo straightener, which resamples a drifting song by a percent or two so its beats land on a constant grid.
 - `Sources/BlendKit`: Swift. Library on disk, track loading, song structure, transition planning, the live session.
 - `Sources/Blend`: the app. SwiftUI for the chrome, Core Animation layers for platters and waveforms, raw `NSTouch` for the trackpad.
-- `Sources/blendtool`: offline tests. `selftest` checks beat sync and CPU cost, `automix` renders a scripted session without audio output.
+- `Sources/blendtool`: offline tests. `selftest` checks beat sync and CPU cost, `grid` measures how tightly the drums sit on the beat grid, `automix` renders a scripted session without audio output.
 
 ## Build
 

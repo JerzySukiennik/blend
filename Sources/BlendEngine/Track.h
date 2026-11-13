@@ -16,4 +16,7 @@ struct be_track {
     float gain = 1.0f;
 };
 
+bool be_fit_grid(const double *beatTimes, int n, double &period, double &first, float &confidence);
+float be_kick_tightness(const int16_t *pcm, int64_t frames, double period, double first);
+
 #endif

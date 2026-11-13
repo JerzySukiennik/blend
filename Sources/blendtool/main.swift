@@ -135,12 +135,59 @@ func describe(_ t: LoadedTrack) -> String {
         return i >= 0.62 ? "#" : i >= 0.3 ? "+" : s.total[b] > 0.12 ? "-" : "."
     }.joined()
     let vox = (0..<s.bars).map { s.level[0][$0] > 0.4 ? "v" : " " }.joined()
+    let w = t.warp
+    let numbers = String(format: "tracker %.2f -> %.2f, kicks %.2f -> %.2f, drift %.0f ms, speed %.3f..%.3f", w.before, w.after, w.tightBefore, w.tightAfter, w.drift * 1000, w.rateLow, w.rateHigh)
+    let warp = w.applied == 1 ? "\n   straightened: " + numbers : w.anchors > 0 ? "\n   left as is: " + numbers : ""
     return String(format: "%-34@ %7.3f BPM  key %-3@ (%.2f)  conf %.2f  gain %.2f  first %.0f  bar+%d phrase+%d  bars %d  drops [%@]  vocals [%@]  full@%d last@%d",
                   t.info.title as NSString, a.bpm, a.keyName as NSString, a.keyStrength, a.confidence, a.gain, a.firstBeatFrame, s.barPhase, s.phrasePhase, s.bars,
-                  bars(s.drops) as NSString, bars(s.vocalStarts) as NSString, s.firstFull, s.lastStrong) + "\n   " + line + "\n   " + vox
+                  bars(s.drops) as NSString, bars(s.vocalStarts) as NSString, s.firstFull, s.lastStrong) + "\n   " + line + "\n   " + vox + warp
 }
 
-func analyze(_ paths: [String]) {
+func tightness(_ t: LoadedTrack) -> String {
+    let hop = 64, frames = Int(be_track_frames(t.raw))
+    guard let p = be_track_stem(t.raw, t.stems == 4 ? 1 : 0), frames > hop * 16 else { return "" }
+    var env = [Float](repeating: 0, count: frames / hop)
+    let k = 1 - exp(-2 * Float.pi * 130 / 44100)
+    var a: Float = 0, b: Float = 0
+    for m in 0..<env.count {
+        var acc: Float = 0
+        for i in 0..<hop {
+            let j = (m * hop + i) * 2
+            a += k * (Float(p[j]) + Float(p[j + 1]) - a)
+            b += k * (a - b)
+            acc += abs(b)
+        }
+        env[m] = acc / Float(hop * 65536)
+    }
+    var hits: [(beat: Int, off: Double, peak: Float)] = []
+    let reach = Int(0.22 * t.fpb / Double(hop))
+    for b in 0..<t.analysis.beats {
+        let c = Int(((t.analysis.firstBeatFrame + Double(b) * t.fpb) / Double(hop)).rounded())
+        guard c - reach >= 6, c + reach < env.count else { continue }
+        var best = c, top: Float = 0
+        for m in (c - reach)...(c + reach) {
+            let rise = env[m] - env[m - 6]
+            if rise > top {
+                top = rise
+                best = m
+            }
+        }
+        hits.append((b, Double(best - c) * Double(hop) / 44.1, top))
+    }
+    guard hits.count > 32 else { return "" }
+    let floor = hits.map(\.peak).sorted()[hits.count * 9 / 10] * 0.25
+    let strong = hits.filter { $0.peak >= floor }
+    func median(_ v: [Double]) -> Double { v.isEmpty ? 0 : v.sorted()[v.count / 2] }
+    let mid = median(strong.map(\.off))
+    let near = strong.filter { abs($0.off - mid) <= 15 }.count
+    let parts = (0..<12).map { k -> String in
+        let chunk = strong.filter { $0.beat * 12 / max(1, t.analysis.beats) == k }.map(\.off)
+        return chunk.count < 4 ? "  ." : String(format: "%+4.0f", median(chunk) - mid)
+    }.joined(separator: " ")
+    return String(format: "   kicks on the grid: %.0f%% within 15 ms (%d hits), through the song in ms: %@", 100 * Double(near) / Double(max(1, strong.count)), strong.count, parts)
+}
+
+func analyze(_ paths: [String], grid: Bool = false) {
     for path in paths {
         let url = URL(fileURLWithPath: path)
         var isDir: ObjCBool = false
@@ -154,6 +201,7 @@ func analyze(_ paths: [String]) {
             let t0 = Date()
             let t = try LoadedTrack.load(info)
             print(describe(t), String(format: "  (%.1fs)", Date().timeIntervalSince(t0)))
+            if grid { print(tightness(t)) }
         } catch {
             print("FAILED", path, error.localizedDescription)
         }
@@ -259,11 +307,16 @@ func automix(_ argv: [String]) {
     if let out { writeWav(out, outL, outR) }
 }
 
-let args = CommandLine.arguments
+var args = CommandLine.arguments
+if let i = args.firstIndex(of: "--raw") {
+    args.remove(at: i)
+    LoadedTrack.straightens = false
+}
 switch args.count > 1 ? args[1] : "" {
 case "automix": automix(Array(args.dropFirst(2)))
 case "selftest": selftest()
 case "analyze": analyze(Array(args.dropFirst(2)))
+case "grid": analyze(Array(args.dropFirst(2)), grid: true)
 case "library": analyze(Library.scan().map(\.folder.path))
-default: print("usage: blendtool selftest | analyze <folder or file>... | library")
+default: print("usage: blendtool selftest | analyze <folder or file>... | grid <folder>... [--raw] | library")
 }

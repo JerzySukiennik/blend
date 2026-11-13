@@ -129,6 +129,20 @@ int32_t be_analyze(const be_track *t, const double *beatTimes, int32_t nBeats, c
 int32_t be_beat_energy(const be_track *t, double bpm, double firstBeatFrame, float *out, int32_t maxBeats);
 int32_t be_waveform(const be_track *t, double pointsPerSecond, uint8_t *out, int32_t maxPoints);
 
+typedef struct {
+    float before;
+    float after;
+    float tightBefore;
+    float tightAfter;
+    double drift;
+    double rateLow;
+    double rateHigh;
+    int32_t anchors;
+    int32_t applied;
+} be_warp;
+
+int32_t be_track_straighten(be_track *t, double *beatTimes, int32_t nBeats, double *downbeatTimes, int32_t nDownbeats, int32_t decide, be_warp *info);
+
 #ifdef __cplusplus
 }
 #endif
