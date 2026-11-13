@@ -1,4 +1,4 @@
-// blendtool: offline tests for the Blend engine and library (no audio output).
+// blendtool: offline tests for the Blend engine, the trackpad gesture rules and the library (no audio output).
 import BlendEngine
 import BlendKit
 import Foundation
@@ -245,7 +245,7 @@ func infoFor(_ path: String) -> TrackInfo? {
 }
 
 func automix(_ argv: [String]) {
-    var paths: [String] = [], script: [(Double, String)] = [], seconds = 120.0, out: String?, skip = 0.0, trace = false, lastTrace = -1.0
+    var paths: [String] = [], script: [(Double, String)] = [], seconds = 120.0, out: String?, skip = 0.0, trace = false, lastTrace = -1.0, every = 4.0
     var i = 0
     while i < argv.count {
         switch argv[i] {
@@ -254,6 +254,7 @@ func automix(_ argv: [String]) {
         case "--out": out = argv[i + 1]; i += 2
         case "--skip": skip = Double(argv[i + 1])!; i += 2
         case "--trace": trace = true; i += 1
+        case "--every": every = Double(argv[i + 1])!; i += 2
         default: paths.append(argv[i]); i += 1
         }
     }
@@ -285,6 +286,16 @@ func automix(_ argv: [String]) {
             } else if cmd.hasPrefix("stem") {
                 let parts = cmd.split(separator: ":")
                 session.toggleStem(Int(parts[1])!, Stem(rawValue: Int(parts[2])!)!)
+            } else if cmd.hasPrefix("style:") {
+                session.setStyle(Technique(rawValue: String(cmd.dropFirst(6))))
+            } else if cmd == "roll:on" {
+                session.rollBegin()
+            } else if cmd == "roll:off" {
+                session.rollEnd()
+            } else if cmd == "half" {
+                session.scaleLoop(0.5)
+            } else if cmd == "auto:off" {
+                session.autoMix = false
             } else if cmd == "pause" {
                 session.playPause(session.current ?? 0)
             } else if cmd == "fadeend" {
@@ -297,7 +308,7 @@ func automix(_ argv: [String]) {
         session.tick()
         if trace, let tr = session.transition {
             let st = session.engine.state
-            let step = (st.masterBeat / 4).rounded(.down)
+            let step = (st.masterBeat / every + 0.02).rounded(.down)
             if step != lastTrace, st.masterBeat >= tr.startBeat - 2 {
                 lastTrace = step
                 func row(_ d: Int) -> String {
@@ -305,7 +316,8 @@ func automix(_ argv: [String]) {
                     let v = (0..<7).map { k.param(Int32($0)) }
                     return String(format: "%@ vol %.2f voc %.2f drm %.2f bas %.2f mus %.2f flt %+.2f ech %.2f", k.playing != 0 ? "on " : "off", v[0], v[1], v[2], v[3], v[4], v[5], v[6])
                 }
-                print(String(format: "    p %.3f bpm %6.2f | out: %@ | in: %@ pitch %d", tr.progress(atBeat: st.masterBeat), st.masterBpm, row(tr.from), row(tr.to), session.decks[tr.to].pitch))
+                print(String(format: "    %@ p %.3f bpm %6.2f | out: %@%@ | in: %@ pitch %d", tr.label as NSString, tr.progress(atBeat: st.masterBeat), st.masterBpm, row(tr.from),
+                             (st.deck(tr.from).looping != 0 ? " loop" : st.deck(tr.from).rolling != 0 ? " roll" : "") as NSString, row(tr.to), session.decks[tr.to].pitch))
             }
         }
         session.engine.render(&l, &r, block)
@@ -332,6 +344,257 @@ func automix(_ argv: [String]) {
     if let out { writeWav(out, outL, outR) }
 }
 
+func pairs() {
+    let all = Library.scan().compactMap { info in LoadedTrack.cachedAnalysis(info).map { (info, $0) } }
+    var smooth = 0, ride = 0, wide = 0, cut = 0, total = 0
+    for (ia, a) in all {
+        for (ib, b) in all where ia.id != ib.id {
+            total += 1
+            let ratio = b.bpm / a.bpm
+            if ratio > 1.22 || ratio < 0.82 {
+                cut += 1
+                continue
+            }
+            let m = Key.match(a.key, b.key)
+            let harmonic = min(a.keyStrength, b.keyStrength) >= 0.05 && m.score > 0 && abs(m.shift) <= 1
+            if ratio > 1.11 || ratio < 0.9 {
+                wide += 1
+            } else if harmonic {
+                smooth += 1
+            } else {
+                ride += 1
+            }
+        }
+    }
+    func pct(_ n: Int) -> String { String(format: "%.0f%%", 100 * Double(n) / Double(max(1, total))) }
+    print("songs \(all.count), ordered pairs \(total)")
+    print("harmonic blend \(pct(smooth)), drum ride / loop / chop \(pct(ride)), tempo ride (11-22% apart) \(pct(wide)), cut (wash / roll / spin) \(pct(cut))")
+}
+
+func barChroma(_ t: LoadedTrack, stems: [Int32]) -> [[Float]] {
+    let frames = Int(be_track_frames(t.raw)), n = frames / 4
+    var x = [Float](repeating: 0, count: n)
+    for stem in (t.stems == 4 ? stems : [0]) {
+        let p = be_track_stem(t.raw, stem)!
+        for i in 0..<n {
+            var acc: Float = 0
+            for k in 0..<4 { acc += Float(p[(i * 4 + k) * 2]) + Float(p[(i * 4 + k) * 2 + 1]) }
+            x[i] += acc / 262144
+        }
+    }
+    let fpb = t.fpb / 4, len = Int(fpb), first = t.analysis.firstBeatFrame / 4, st = t.structure
+    let window = (0..<len).map { Float(0.5 - 0.5 * cos(2 * Double.pi * Double($0) / Double(len))) }
+    let coeff = (48..<84).map { Float(2 * cos(2 * Double.pi * 440 * pow(2, (Double($0) - 69) / 12) / 11025)) }
+    var out: [[Float]] = []
+    for bar in 0..<st.bars {
+        var f = [Float](repeating: 0, count: 48)
+        for q in 0..<4 {
+            let i0 = Int((first + (st.beat(ofBar: bar) + Double(q)) * fpb).rounded())
+            guard i0 >= 0, i0 + len <= n else { continue }
+            for (k, c) in coeff.enumerated() {
+                var s1: Float = 0, s2: Float = 0
+                for i in 0..<len {
+                    let s0 = x[i0 + i] * window[i] + c * s1 - s2
+                    s2 = s1
+                    s1 = s0
+                }
+                f[q * 12 + (48 + k) % 12] += max(0, s1 * s1 + s2 * s2 - c * s1 * s2).squareRoot()
+            }
+        }
+        let norm = f.reduce(0) { $0 + $1 * $1 }.squareRoot()
+        out.append(norm > 1e-6 ? f.map { $0 / norm } : f)
+    }
+    return out
+}
+
+func barVoice(_ t: LoadedTrack) -> [[Float]] {
+    guard t.stems == 4, let p = be_track_stem(t.raw, 0) else { return [] }
+    let frames = Int(be_track_frames(t.raw)), st = t.structure, step = t.fpb / 4
+    return (0..<st.bars).map { bar in
+        (0..<16).map { k -> Float in
+            let i0 = Int(t.analysis.firstBeatFrame + (st.beat(ofBar: bar) * 4 + Double(k)) * step), i1 = i0 + Int(step)
+            guard i0 >= 0, i1 <= frames else { return 0 }
+            var acc: Float = 0
+            for i in stride(from: i0, to: i1, by: 4) { acc += abs(Float(p[i * 2])) }
+            return acc / Float(max(1, (i1 - i0) / 4)) / 32768
+        }
+    }
+}
+
+func twin(_ argv: [String]) {
+    guard argv.count >= 2, let ia = infoFor(argv[0]), let ib = infoFor(argv[1]), let a = try? LoadedTrack.load(ia), let b = try? LoadedTrack.load(ib) else {
+        print("usage: blendtool twin <version folder> <original folder>")
+        return
+    }
+    print(describe(a))
+    print(describe(b))
+    let va = barVoice(a), vb = barVoice(b)
+    func match(_ i: Int, _ j: Int, bars: Int) -> Float {
+        var x: [Float] = [], y: [Float] = []
+        for d in 0..<bars where i + d < va.count && j + d < vb.count && i + d >= 0 && j + d >= 0 {
+            x += va[i + d]
+            y += vb[j + d]
+        }
+        guard x.count >= 16 else { return 0 }
+        let mx = x.reduce(0, +) / Float(x.count), my = y.reduce(0, +) / Float(y.count)
+        var sxy: Float = 0, sxx: Float = 0, syy: Float = 0
+        for k in 0..<x.count {
+            sxy += (x[k] - mx) * (y[k] - my)
+            sxx += (x[k] - mx) * (x[k] - mx)
+            syy += (y[k] - my) * (y[k] - my)
+        }
+        return sxx > 1e-9 && syy > 1e-9 ? sxy / (sxx * syy).squareRoot() : 0
+    }
+    print("vocal envelope: 2-bar block of \(a.info.title) (\(a.info.artist)) -> best matches in the other version (bar:correlation)")
+    var pairs: [(Int, Int)] = []
+    var i = 0
+    while i + 2 <= va.count {
+        let loud = va[i].reduce(0, +) + va[i + 1].reduce(0, +)
+        let scored = (0..<max(1, vb.count - 1)).map { ($0, match(i, $0, bars: 2)) }.sorted { $0.1 > $1.1 }
+        let top = scored.prefix(4).map { String(format: "%3d:%.2f", $0.0, $0.1) }.joined(separator: "  ")
+        print(String(format: "  bar %3d  voice %.2f  ->  %@", i, loud / 32, top as NSString))
+        if let best = scored.first, best.1 > 0.8 { pairs.append((i, best.0)) }
+        i += 2
+    }
+    var anchors: [(Int, Int)] = []
+    for (x, y) in pairs where anchors.last.map({ y - $0.1 != x - $0.0 }) ?? true { anchors.append((x, y)) }
+    print("runs with a constant offset (bar here, bar there):", anchors.map { "[\($0.0), \($0.1)]" }.joined(separator: ", "))
+    guard argv.count >= 3, let offset = Int(argv[2]) else { return }
+    let ca = barChroma(a, stems: [2, 3]), cb = barChroma(b, stems: [2, 3])
+    let bars = (0..<ca.count).filter { $0 + offset >= 0 && $0 + offset < cb.count }
+    for shift in 0..<12 {
+        var total: Float = 0
+        for x in bars {
+            for q in 0..<4 {
+                for k in 0..<12 { total += ca[x][q * 12 + k] * cb[x + offset][q * 12 + (k + shift) % 12] }
+            }
+        }
+        print(String(format: "bass and music at offset %d bars, other version %+d semitones: %.3f", offset, shift > 6 ? shift - 12 : shift, total / Float(max(1, bars.count))))
+    }
+}
+
+func touchtest() {
+    final class Seen {
+        var begins: [Int] = [], ends: [Int] = [], taps: [Int] = []
+        var frames = [0.0, 0.0], filter: [Float] = [0, 0]
+        var fade = 0.0, fadeEnds = 0
+    }
+    func make() -> (TouchBoard, Seen) {
+        let b = TouchBoard(), s = Seen()
+        b.onScratchBegin = { s.begins.append($0) }
+        b.onScratchEnd = { s.ends.append($0) }
+        b.onScratchMove = { d, f in s.frames[d] += abs(f) }
+        b.onFilter = { d, v in s.filter[d] = v }
+        b.onFade = { s.fade += $0 }
+        b.onFadeEnd = { s.fadeEnds += 1 }
+        b.onTap = { s.taps.append($0) }
+        return (b, s)
+    }
+    var failed = 0
+    func check(_ name: String, _ ok: Bool, _ detail: String) {
+        if !ok { failed += 1 }
+        print((ok ? "PASS  " : "FAIL  ") + name + "  " + detail)
+    }
+    func slide(_ b: TouchBoard, ids: [String], from: [(Double, Double)], to: [(Double, Double)], steps: Int = 20, t0: Double = 0.02) {
+        for k in 1...steps {
+            let f = Double(k) / Double(steps)
+            b.moved(ids.enumerated().map { i, id in TouchPoint(id: id, x: from[i].0 + (to[i].0 - from[i].0) * f, y: from[i].1 + (to[i].1 - from[i].1) * f) }, time: t0 + Double(k) * 0.016)
+        }
+    }
+
+    var (b, s) = make()
+    b.began([TouchPoint(id: "a", x: 0.30, y: 0.08), TouchPoint(id: "b", x: 0.38, y: 0.10)], live: ["a", "b"], time: 0)
+    slide(b, ids: ["a", "b"], from: [(0.30, 0.08), (0.38, 0.10)], to: [(0.30, 0.6), (0.38, 0.62)])
+    check("two fingers swiping up from the bottom strip sweep the filter", s.filter[0] > 0.5 && s.fade == 0 && s.begins.isEmpty, "filter \(s.filter[0]) fade \(s.fade) scratches \(s.begins)")
+    b.ended(["a", "b"], cancelled: false, time: 1)
+    check("filter is released when both fingers lift", !b.filtering[0], "")
+
+    (b, s) = make()
+    b.began([TouchPoint(id: "a", x: 0.46, y: 0.5), TouchPoint(id: "b", x: 0.56, y: 0.52)], live: ["a", "b"], time: 0)
+    slide(b, ids: ["a", "b"], from: [(0.46, 0.5), (0.56, 0.52)], to: [(0.46, 0.8), (0.56, 0.82)])
+    check("two fingers across the centre line filter one deck, scratch none", s.filter[0] > 0.3 && s.filter[1] == 0 && s.begins.isEmpty, "filter \(s.filter) scratches \(s.begins)")
+
+    (b, s) = make()
+    b.began([TouchPoint(id: "a", x: 0.05, y: 0.08)], live: ["a"], time: 0)
+    slide(b, ids: ["a"], from: [(0.05, 0.08)], to: [(0.6, 0.09)])
+    b.ended(["a"], cancelled: false, time: 1)
+    check("a slide that starts in the corner becomes the crossfader", s.fade > 0.6 && s.fadeEnds == 1 && s.taps.isEmpty, "fade \(s.fade) ends \(s.fadeEnds) taps \(s.taps)")
+
+    (b, s) = make()
+    b.began([TouchPoint(id: "a", x: 0.95, y: 0.05)], live: ["a"], time: 0)
+    b.ended(["a"], cancelled: false, time: 0.15)
+    check("a quick corner tap plays or pauses that deck", s.taps == [1], "taps \(s.taps)")
+
+    (b, s) = make()
+    b.began([TouchPoint(id: "a", x: 0.95, y: 0.05, resting: true)], live: ["a"], time: 0)
+    b.ended(["a"], cancelled: false, time: 0.15)
+    check("a corner tap the system flags as resting still counts", s.taps == [1], "taps \(s.taps)")
+
+    (b, s) = make()
+    b.began([TouchPoint(id: "a", x: 0.25, y: 0.6)], live: ["a"], time: 0)
+    b.hold("a")
+    check("a finger held still stops the record", s.begins == [0], "scratches \(s.begins)")
+    b.ended(["a"], cancelled: false, time: 2)
+    check("lifting it lets the record go", s.ends == [0], "ends \(s.ends)")
+
+    (b, s) = make()
+    b.began([TouchPoint(id: "ghost", x: 0.2, y: 0.5)], live: ["ghost"], time: 0)
+    b.hold("ghost")
+    b.began([TouchPoint(id: "a", x: 0.3, y: 0.6)], live: ["a"], time: 5)
+    slide(b, ids: ["a"], from: [(0.3, 0.6)], to: [(0.2, 0.75)], t0: 5)
+    check("a touch that never reported its end does not block the next gesture", s.ends.first == 0 && s.begins == [0, 0] && !b.filtering[0] && s.frames[0] > 1000, "begins \(s.begins) ends \(s.ends) frames \(Int(s.frames[0]))")
+
+    (b, s) = make()
+    b.began([TouchPoint(id: "a", x: 0.3, y: 0.1)], live: ["a"], time: 0)
+    slide(b, ids: ["a"], from: [(0.3, 0.1)], to: [(0.31, 0.7)])
+    check("one finger moving up out of the strip scratches instead of fading", s.begins == [0] && s.fade == 0 && s.frames[0] > 1000, "begins \(s.begins) fade \(s.fade)")
+
+    (b, s) = make()
+    b.began([TouchPoint(id: "palm", x: 0.1, y: 0.5, resting: true)], live: ["palm"], time: 0)
+    b.began([TouchPoint(id: "a", x: 0.3, y: 0.6)], live: ["palm", "a"], time: 1)
+    slide(b, ids: ["a"], from: [(0.3, 0.6)], to: [(0.2, 0.75)], t0: 1)
+    check("a resting palm does not turn a scratch into a filter", s.begins == [0] && !b.filtering[0], "begins \(s.begins) filtering \(b.filtering)")
+
+    (b, s) = make()
+    slide(b, ids: ["late"], from: [(0.7, 0.5)], to: [(0.8, 0.7)])
+    check("a finger first seen while moving is picked up", s.begins == [1] && s.frames[1] > 1000, "begins \(s.begins)")
+
+    (b, s) = make()
+    b.began([TouchPoint(id: "a", x: 0.25, y: 0.6)], live: ["a"], time: 0)
+    b.began([TouchPoint(id: "b", x: 0.75, y: 0.6)], live: ["a", "b"], time: 0.05)
+    slide(b, ids: ["a", "b"], from: [(0.25, 0.6), (0.75, 0.6)], to: [(0.2, 0.75), (0.8, 0.75)])
+    check("two hands scratch both decks at once", Set(s.begins) == [0, 1] && !b.filtering[0] && !b.filtering[1], "begins \(s.begins)")
+
+    (b, s) = make()
+    b.began([TouchPoint(id: "a", x: 0.4, y: 0.1)], live: ["a"], time: 0)
+    slide(b, ids: ["a"], from: [(0.4, 0.1)], to: [(0.7, 0.12)])
+    check("a slide along the bottom strip crossfades", s.fade > 0.35 && s.begins.isEmpty, "fade \(s.fade)")
+
+    (b, s) = make()
+    b.began([TouchPoint(id: "a", x: 0.3, y: 0.6)], live: ["a"], time: 0)
+    slide(b, ids: ["a"], from: [(0.3, 0.6)], to: [(0.2, 0.75)])
+    b.began([TouchPoint(id: "palm", x: 0.08, y: 0.4)], live: ["a", "palm"], time: 1.2)
+    let before = s.frames[0]
+    slide(b, ids: ["a"], from: [(0.2, 0.75)], to: [(0.3, 0.6)], t0: 1.3)
+    check("a palm that lands in the middle of a scratch does not turn it into a filter", !b.filtering[0] && s.ends.isEmpty && s.frames[0] > before + 1000, "filtering \(b.filtering) ends \(s.ends)")
+
+    (b, s) = make()
+    b.began([TouchPoint(id: "a", x: 0.3, y: 0.5)], live: ["a"], time: 0)
+    b.hold("a")
+    b.began([TouchPoint(id: "b", x: 0.2, y: 0.5)], live: ["a", "b"], time: 0.3)
+    slide(b, ids: ["a", "b"], from: [(0.3, 0.5), (0.2, 0.5)], to: [(0.3, 0.8), (0.2, 0.8)], t0: 0.3)
+    check("a second finger joining a still one still gives the filter", b.filtering[0] && s.filter[0] > 0.3 && s.ends == [0], "filter \(s.filter[0]) ends \(s.ends)")
+
+    (b, s) = make()
+    b.began([TouchPoint(id: "a", x: 0.3, y: 0.5), TouchPoint(id: "b", x: 0.2, y: 0.5)], live: ["a", "b"], time: 0)
+    slide(b, ids: ["a", "b"], from: [(0.3, 0.5), (0.2, 0.5)], to: [(0.3, 0.6), (0.2, 0.6)])
+    b.rest(["b"])
+    slide(b, ids: ["a"], from: [(0.3, 0.6)], to: [(0.3, 0.8)], t0: 1)
+    b.ended(["a"], cancelled: false, time: 2)
+    check("a filter finger that goes to rest lets the other one finish the sweep", s.filter[0] > 0.6 && !b.filtering[0], "filter \(s.filter[0]) filtering \(b.filtering)")
+    print(failed == 0 ? "touch rules: all passed" : "touch rules: \(failed) FAILED")
+}
+
 var args = CommandLine.arguments
 if let i = args.firstIndex(of: "--raw") {
     args.remove(at: i)
@@ -343,5 +606,8 @@ case "selftest": selftest()
 case "analyze": analyze(Array(args.dropFirst(2)))
 case "grid": analyze(Array(args.dropFirst(2)), grid: true)
 case "library": analyze(Library.scan().map(\.folder.path))
-default: print("usage: blendtool selftest | analyze <folder or file>... | grid <folder>... [--raw] | library")
+case "pairs": pairs()
+case "touch": touchtest()
+case "twin": twin(Array(args.dropFirst(2)))
+default: print("usage: blendtool selftest | touch | pairs | analyze <folder or file>... | grid <folder>... [--raw] | library | automix <folders> [--at <s> <move>] [--trace]")
 }

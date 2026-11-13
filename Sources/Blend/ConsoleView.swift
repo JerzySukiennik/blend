@@ -1,4 +1,4 @@
-// Blend app: the console screen (two platters, countdown, dual waveform strip, move pills).
+// Blend app: the console screen (two platters, countdown, mix style, dual waveform strip, move pills).
 import BlendKit
 import SwiftUI
 
@@ -137,13 +137,29 @@ struct CenterColumn: View {
             .frame(height: u * 3.4)
             .background(Capsule().fill(Theme.text))
             .opacity(state.enabled ? 1 : 0.35)
-            HStack(spacing: u * 0.5) {
-                Circle().fill(s.autoMix ? Theme.stems[3] : Theme.faint).frame(width: u * 0.55, height: u * 0.55)
-                Text(s.autoMix ? "AUTO MIX ON" : "AUTO MIX OFF").font(.system(size: u * 0.76, weight: .bold)).tracking(u * 0.08)
-                Text("A").font(.system(size: u * 0.72, weight: .semibold)).foregroundStyle(Theme.faint)
+            VStack(spacing: u * 0.55) {
+                HStack(spacing: u * 0.5) {
+                    Circle().fill(s.autoMix ? Theme.stems[3] : Theme.faint).frame(width: u * 0.55, height: u * 0.55)
+                    Text(s.autoMix ? "AUTO MIX ON" : "AUTO MIX OFF").font(.system(size: u * 0.76, weight: .bold)).tracking(u * 0.08)
+                    Text("A").font(.system(size: u * 0.72, weight: .semibold)).foregroundStyle(Theme.faint)
+                }
+                HStack(spacing: u * 0.5) {
+                    Text("STYLE").font(.system(size: u * 0.76, weight: .bold)).tracking(u * 0.08).foregroundStyle(Theme.faint)
+                    Text(styleText(s)).font(.system(size: u * 0.76, weight: .bold)).tracking(u * 0.08)
+                        .foregroundStyle(s.style == nil ? Theme.dim : Theme.text)
+                        .contentTransition(.opacity)
+                    Text("M").font(.system(size: u * 0.72, weight: .semibold)).foregroundStyle(Theme.faint)
+                }
+                .animation(Theme.snappy, value: styleText(s))
             }
             .foregroundStyle(Theme.dim)
         }
+    }
+
+    private func styleText(_ s: Session) -> String {
+        if let forced = s.style { return forced.label }
+        if let tr = s.transition { return "AUTO · " + tr.label }
+        return s.upcoming.map { "AUTO · " + $0.label } ?? "AUTO"
     }
 
     private func centerState(_ s: Session) -> (big: String, small: String, action: String, ring: CGFloat, enabled: Bool) {
@@ -153,8 +169,8 @@ struct CenterColumn: View {
         }
         if s.paused { return ("II", "PAUSED", "PLAY", 0, true) }
         if let tr = s.transition {
-            if let bars = s.countdownBars, bars > 0, !tr.manual { return ("\(bars)", bars == 1 ? "BAR" : "BARS", tr.style.rawValue.uppercased(), 0, false) }
-            return ("", tr.manual ? "BY HAND" : "MIXING", tr.manual ? "FINISH" : tr.style.rawValue.uppercased(), CGFloat(s.mixProgress ?? 0), tr.manual)
+            if let bars = s.countdownBars, bars > 0, !tr.manual { return ("\(bars)", bars == 1 ? "BAR" : "BARS", tr.label, 0, false) }
+            return ("", tr.manual ? "BY HAND" : "MIXING", tr.manual ? "FINISH" : tr.label, CGFloat(s.mixProgress ?? 0), tr.manual)
         }
         if let m = s.mash { return ("", m == .vocal ? "VOCAL MASHUP" : "BEAT SWAP", "MIX", 0, true) }
         if s.nextDeck == nil { return ("", s.queue.isEmpty ? "QUEUE A SONG" : "LOADING", "MIX", 0, false) }
@@ -170,7 +186,7 @@ struct MovesRow: View {
     var body: some View {
         let s = model.session
         HStack(spacing: u * 0.7) {
-            ForEach([Move.vocal, .beat, .build, .drop, .loop, .echo, .brake]) { move in
+            ForEach([Move.vocal, .beat, .build, .drop, .loop, .roll, .echo, .brake, .spin]) { move in
                 MovePill(move: move, active: isActive(move, s), pulse: s.flash == move ? s.flashCount : 0)
             }
         }
@@ -181,6 +197,8 @@ struct MovesRow: View {
         case .vocal: return s.mash == .vocal
         case .beat: return s.mash == .beat
         case .loop: return s.looping
+        case .roll: return s.rolling
+        case .spin: return s.transition?.style == .spin
         case .build: return s.transition?.style == .build
         case .echo: return s.transition?.style == .echo
         case .brake: return s.transition?.style == .brake

@@ -1,4 +1,4 @@
-// Blend kit: the live session. Queue, two decks, automix planning and the eight moves, all scheduled on the engine's beat clock.
+// Blend kit: the live session. Queue, two decks, automix planning, transition techniques and the moves, all scheduled on the engine's beat clock.
 import BlendEngine
 import Foundation
 import Observation
@@ -42,6 +42,9 @@ public final class Session {
     public private(set) var mixProgress: Double?
     public private(set) var looping = false
     public private(set) var filter: [Float] = [0, 0]
+    public private(set) var rolling = false
+    public private(set) var upcoming: Technique?
+    public private(set) var style: Technique?
     public var autoMix = true
 
     @ObservationIgnored public var loader: (TrackInfo, @escaping (Result<LoadedTrack, Error>) -> Void) -> Void = { info, done in
@@ -63,6 +66,11 @@ public final class Session {
     @ObservationIgnored private var awaitingStart = false
     @ObservationIgnored private var loopStart = [0.0, 0.0]
     @ObservationIgnored private var loopLen = [4.0, 4.0]
+    @ObservationIgnored private var used: [Technique: Int] = [:]
+    @ObservationIgnored private var useCount = 0
+    @ObservationIgnored private var rollDeck: Int?
+    @ObservationIgnored private var rollTag = 0
+    @ObservationIgnored private var rollLen = 0.5
 
     public init(engine: Engine = Engine()) {
         self.engine = engine
@@ -87,7 +95,7 @@ public final class Session {
 
     public func analyzeMissing() {
         let missing = library.filter { analyses[$0.id] == nil }
-        guard !missing.isEmpty else { return }
+        guard !missing.isEmpty, analyzing == nil else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             for info in missing {
                 DispatchQueue.main.async { self?.analyzing = info.title }
@@ -146,14 +154,45 @@ public final class Session {
         refill()
     }
 
-    public func fit(_ info: TrackInfo) -> Int {
-        guard let c = current, let a = decks[c].track, let b = analyses[info.id] else { return 0 }
-        let ratio = b.bpm / a.analysis.bpm
-        let tempo = abs(ratio - 1) < 0.035 ? 2 : abs(ratio - 1) < 0.08 ? 1 : 0
-        let key = Key.match(effectiveKey(c), b.key).score
-        if tempo == 2 && key >= 2 { return 3 }
-        if tempo >= 1 && key >= 1 { return 2 }
-        return tempo >= 1 ? 1 : 0
+    public var mixReference: TrackInfo? { queue.last ?? current.flatMap { decks[$0].track?.info } }
+
+    public func fit(_ info: TrackInfo, to ref: TrackInfo? = nil) -> Int {
+        guard let ref = ref ?? mixReference, ref.id != info.id, let a = analyses[ref.id], let b = analyses[info.id] else { return 0 }
+        if ref.twin?.of == info.id || info.twin?.of == ref.id { return 3 }
+        var key = a.key
+        if let c = current, decks[c].track?.info.id == ref.id { key = effectiveKey(c) }
+        let ratio = b.bpm / a.bpm
+        if ratio > 1.22 || ratio < 0.82 { return 0 }
+        let match = Key.match(key, b.key)
+        let harmonic = min(a.keyStrength, b.keyStrength) >= 0.05 && match.score > 0 && abs(match.shift) <= 1
+        guard harmonic, ratio <= 1.11, ratio >= 0.9 else { return 1 }
+        return abs(ratio - 1) < 0.045 && match.shift == 0 ? 3 : 2
+    }
+
+    public func cycleStyle(_ step: Int = 1) {
+        let all: [Technique?] = [nil] + Technique.allCases.map { $0 }
+        let i = all.firstIndex { $0 == style } ?? 0
+        style = all[((i + step) % all.count + all.count) % all.count]
+        plan = nil
+        planEpoch += 1
+        say(style.map { "\($0.label): \($0.help)" } ?? "AUTO: Blend picks the mix style")
+    }
+
+    public func setStyle(_ new: Technique?) {
+        style = new
+        plan = nil
+        planEpoch += 1
+    }
+
+    private func pick(_ options: [Technique]) -> Technique {
+        var best = options[0]
+        for o in options.dropFirst() where (used[o] ?? -1) < (used[best] ?? -1) { best = o }
+        return best
+    }
+
+    private func note(_ tech: Technique) {
+        used[tech] = useCount
+        useCount += 1
     }
 
     private func effectiveKey(_ deck: Int) -> Int {
@@ -163,6 +202,7 @@ public final class Session {
     }
 
     private func say(_ text: String) {
+        if hint == text, Date() < hintUntil.addingTimeInterval(-1.6) { return }
         hint = text
         hintUntil = Date().addingTimeInterval(2.6)
         log?("hint: \(text)")
@@ -295,8 +335,10 @@ public final class Session {
         case .build: cut(.build)
         case .echo: cut(.echo)
         case .brake: cut(.brake)
+        case .spin: cut(.spin)
         case .drop: dropJump()
         case .loop: toggleLoop()
+        case .roll: rollBegin(hold: false)
         }
     }
 
@@ -322,10 +364,11 @@ public final class Session {
             return
         }
         guard var tr = planBlend(from: c, to: n, auto: false, engine.state) else { return }
-        if tr.style == .blend {
-            commit(&tr)
-        } else {
-            cut(.echo, lead: 4)
+        switch tr.technique {
+        case _ where tr.style == .blend: commit(&tr)
+        case .roll: cut(.build, technique: .roll)
+        case .spin: cut(.spin, technique: .spin)
+        default: cut(.echo, lead: 4, technique: .wash)
         }
     }
 
@@ -335,12 +378,71 @@ public final class Session {
         return b
     }
 
-    private func planBlend(from f: Int, to t: Int, auto: Bool, _ s: be_state) -> Transition? {
+    private func twinAnchors(_ a: LoadedTrack, _ b: LoadedTrack) -> [(from: Int, to: Int)]? {
+        if let t = a.info.twin, t.of == b.info.id { return t.map.filter { $0.count == 2 }.map { (from: $0[0], to: $0[1]) } }
+        if let t = b.info.twin, t.of == a.info.id {
+            if let back = t.back { return back.filter { $0.count == 2 }.map { (from: $0[0], to: $0[1]) } }
+            return t.map.filter { $0.count == 2 }.map { (from: $0[1], to: $0[0]) }
+        }
+        return nil
+    }
+
+    private func twinShift(_ a: LoadedTrack, _ b: LoadedTrack) -> Int? {
+        if let t = a.info.twin, t.of == b.info.id { return t.semitones }
+        if let t = b.info.twin, t.of == a.info.id { return -t.semitones }
+        return nil
+    }
+
+    private func twinRuns(_ a: LoadedTrack, bar: Int, bars: Int, _ b: LoadedTrack) -> Bool {
+        guard let first = twinBar(a, bar: bar, b), let last = twinBar(a, bar: bar + bars - 1, b) else { return false }
+        return last - first == bars - 1 && last < b.structure.lastStrong
+    }
+
+    private func twinBar(_ a: LoadedTrack, bar: Int, _ b: LoadedTrack) -> Int? {
+        guard let anchors = twinAnchors(a, b), let first = anchors.min(by: { ($0.from, $0.to) < ($1.from, $1.to) }) else { return nil }
+        guard let hit = anchors.filter({ $0.from <= bar }).max(by: { ($0.from, -$0.to) < ($1.from, -$1.to) }) else { return max(0, first.to - (first.from - bar)) }
+        let room = max(8, (b.structure.lastStrong - 8 - hit.to) / 8 * 8)
+        return hit.to + (bar - hit.from) % room
+    }
+
+    private func twinStart(_ a: LoadedTrack, _ b: LoadedTrack, after now: Int, bars: Int) -> Int? {
+        guard twinAnchors(a, b) != nil else { return nil }
+        let sa = a.structure, limit = b.structure.bars * 2 / 5
+        var best: Int?
+        for bar in (sa.bars * 3 / 10)..<max(sa.bars * 3 / 10, sa.lastStrong - bars + 1) where bar > now && sa.isPhrase(bar, every: 4) {
+            if let m = twinBar(a, bar: bar, b), m <= limit, twinRuns(a, bar: bar, bars: bars, b) { best = bar }
+        }
+        return best
+    }
+
+    private func cueBar(_ b: LoadedTrack, lead: Int) -> Int {
+        let sb = b.structure, intro = sb.firstFull - sb.startBar
+        guard intro > lead, intro <= 32 else { return sb.startBar }
+        var bar = sb.firstFull - lead
+        if let sung = sb.vocalStarts.first, sung < sb.firstFull { bar = min(bar, sb.phraseStart(atOrBefore: sung, every: 4)) }
+        return max(sb.startBar, bar)
+    }
+
+    private func carries(_ a: LoadedTrack, _ b: LoadedTrack, from bar: Int, bars n: Int, entry: Int) -> Bool {
+        let sa = a.structure, sb = b.structure
+        guard n >= 8, sa.stemPresent[Stem.vocals.rawValue], sb.stemPresent[Stem.drums.rawValue] else { return false }
+        func mean(_ v: [Float], _ r: Range<Int>) -> Float {
+            let c = r.clamped(to: 0..<v.count)
+            return c.isEmpty ? 0 : v[c].reduce(0, +) / Float(c.count)
+        }
+        let sung = mean(sa.level[0], (bar + n / 2)..<(bar + n * 7 / 8))
+        let quiet = mean(sb.level[0], max(0, entry)..<(max(0, entry) + n * 7 / 8))
+        return sung > 0.45 && quiet < 0.2
+    }
+
+    private func planBlend(from f: Int, to t: Int, auto: Bool, byHand: Bool = false, _ s: be_state) -> Transition? {
         guard let a = decks[f].track, let b = decks[t].track else { return nil }
         let sa = a.structure, sb = b.structure
         let da = s.deck(f), db = s.deck(t)
         let toPlaying = db.playing != 0
-        let ratio = b.analysis.bpm / s.masterBpm
+        let related = toPlaying ? nil : twinShift(a, b)
+        let home = a.analysis.bpm
+        let ratio = b.analysis.bpm / home
         var n = auto ? 16 : 8
         if toPlaying {
             n = 8
@@ -353,33 +455,82 @@ public final class Session {
             }
             if a.analysis.confidence < 0.6 || b.analysis.confidence < 0.6 { n = min(n, 4) }
         }
-        let endBar = sa.lastStrong + 1
-        var startBar: Int
-        if auto {
-            startBar = sa.phraseStart(atOrBefore: endBar - n, every: 4)
-            if sa.beat(ofBar: startBar) < da.beat + 1 { startBar = nextBar(sa, after: da.beat, ahead: 1, every: 4) }
-        } else {
-            startBar = nextBar(sa, after: da.beat, ahead: 1, every: mash != nil ? 2 : 4)
-        }
-        let left = max(2, endBar - startBar)
-        while n > 2 && n > left { n /= 2 }
-        let bStartBar = toPlaying ? 0 : sb.startBar
-        let length = Double(n * 4)
-        var tr = Transition(style: .blend, from: f, to: t, startBeat: sa.beat(ofBar: startBar) - da.offset, length: length, toTrackBeat: sb.beat(ofBar: bStartBar),
-                            tempoFrom: s.masterBpm, tempoTo: b.analysis.bpm, tag: nextTag())
-        tr.toWasPlaying = toPlaying
-        if !toPlaying && (ratio > 1.11 || ratio < 0.9) {
-            tr.style = .echo
-            return tr
-        }
+        let far = !toPlaying && !byHand && (ratio > 1.22 || ratio < 0.82)
+        let wide = !toPlaying && !far && (ratio > 1.11 || ratio < 0.9)
         let keyed = Key.match(effectiveKey(f), toPlaying ? effectiveKey(t) : b.analysis.key)
         let sure = toPlaying || min(a.analysis.keyStrength, b.analysis.keyStrength) >= 0.05
-        tr.clash = !sure || keyed.score == 0 || abs(keyed.shift) > 1 || (toPlaying && keyed.shift != 0)
-        tr.pitch = tr.clash || toPlaying ? 0 : keyed.shift
-        tr.lanes = Lanes.blend(from: f, to: t, fromStems: a.stems == 4, toStems: b.stems == 4, toDrums: sb.stemPresent[Stem.drums.rawValue], clash: tr.clash, toPlaying: toPlaying, beat: 1 / length) { deck, param in
+        let clash = related == nil && (!sure || keyed.score == 0 || abs(keyed.shift) > 1 || (toPlaying && keyed.shift != 0))
+        let stems = a.stems == 4 && b.stems == 4
+        let drums = sb.stemPresent[Stem.drums.rawValue]
+        let endBar = sa.lastStrong + 1
+        let here = sa.bar(atBeat: da.beat)
+
+        func place(_ want: Int) -> (bar: Int, bars: Int) {
+            var bars = want, bar: Int
+            if auto, !far, related != nil, let early = twinStart(a, b, after: here, bars: want) {
+                bar = early
+            } else if auto {
+                bar = sa.phraseStart(atOrBefore: endBar - bars, every: 4)
+                if sa.beat(ofBar: bar) < da.beat + 1 { bar = nextBar(sa, after: da.beat, ahead: 1, every: 4) }
+            } else {
+                bar = nextBar(sa, after: da.beat, ahead: 1, every: mash != nil ? 2 : 4)
+            }
+            let left = max(2, endBar - bar)
+            while bars > 2 && bars > left { bars /= 2 }
+            if related != nil {
+                while bars > 2 && !twinRuns(a, bar: bar, bars: bars, b) { bars /= 2 }
+            }
+            return (bar, bars)
+        }
+
+        var (bar, bars) = place(n)
+        var options: [Technique]
+        if far {
+            options = [.wash, .roll, .spin]
+        } else if toPlaying || byHand || !stems {
+            options = clash ? [.ride] : stems && !toPlaying ? [.swap, .melt] : [.swap]
+        } else if clash {
+            options = bars >= 4 && drums ? [.ride, .loop, .chop] : [.ride]
+        } else {
+            options = carries(a, b, from: bar, bars: bars, entry: twinBar(a, bar: bar, b) ?? cueBar(b, lead: bars / 2)) ? [.carry, .swap, .melt] : [.swap, .melt]
+        }
+        var tech = pick(options)
+        if let forced = style, forced != tech {
+            let able = !far && !toPlaying && !byHand && (stems || !forced.needsStems) && (bars >= 4 || !forced.scripted) && (forced != .carry || (bars >= 8 && sa.stemPresent[Stem.vocals.rawValue]))
+            if options.contains(forced) || (!forced.blends && !byHand && !toPlaying) || (forced.blends && able) {
+                tech = forced
+            } else if !auto, !byHand {
+                say("\(forced.label) does not fit this pair, using \(tech.label)")
+            }
+        }
+        if tech == .chop, bars > 8 { (bar, bars) = place(8) }
+        let twin = toPlaying ? nil : twinBar(a, bar: bar, b)
+        let lead = tech == .loop || tech == .chop ? bars : tech == .ride ? bars * 3 / 4 : bars / 2
+        let toBeat = sb.beat(ofBar: twin ?? (toPlaying ? 0 : cueBar(b, lead: lead)))
+        let length = Double(bars * 4)
+        var nudge = 0.0
+        let ka = toPlaying || !tech.blends ? 0 : a.kickOffset(fromBeat: sa.beat(ofBar: bar), beats: max(16, bars * 4))
+        let kb = toPlaying || !tech.blends ? 0 : b.kickOffset(fromBeat: max(toBeat, sb.beat(ofBar: twin == nil ? sb.firstFull : 0)), beats: 32)
+        nudge = max(-0.05, min(0.05, ka * a.analysis.bpm / 60 - kb * b.analysis.bpm / 60))
+        var tr = Transition(style: .blend, from: f, to: t, startBeat: sa.beat(ofBar: bar) - da.offset, length: length, toTrackBeat: toBeat - nudge,
+                            tempoFrom: s.masterBpm, tempoTo: b.analysis.bpm, tag: nextTag())
+        tr.technique = tech
+        tr.toWasPlaying = toPlaying
+        tr.twin = twin != nil
+        if !tech.blends {
+            tr.style = tech == .wash ? .echo : tech == .roll ? .build : .spin
+            return tr
+        }
+        tr.clash = clash
+        tr.pitch = clash || toPlaying ? 0 : related.map { decks[f].pitch + $0 } ?? keyed.shift
+        tr.wide = wide && !byHand
+        tr.lanes = Lanes.blend(tech, from: f, to: t, fromStems: a.stems == 4, toStems: b.stems == 4, toDrums: drums, toPlaying: toPlaying, beats: length) { deck, param in
             Double(s.deck(deck).param(param))
         }
-        log?("plan blend \(a.info.title) bar \(startBar) -> \(b.info.title) bar \(bStartBar), \(n) bars, clash \(tr.clash), key shift \(tr.pitch), tempo \(tr.tempoFrom) -> \(tr.tempoTo)")
+        let meet = (home * b.analysis.bpm).squareRoot()
+        tr.lanes.append(Lane(deck: -1, param: Int32(BE_P_TEMPO), base: s.masterBpm, applyBase: false, segs: tr.wide ? [(p0: 0, p1: 0.3, v: meet)] : [(p0: 0, p1: 1, v: b.analysis.bpm)]))
+        if tech == .loop { tr.cues = Lanes.loopCues(deck: f, beats: length, trackBeat: sa.beat(ofBar: bar) + length / 2) }
+        log?("plan \(tech.rawValue) \(a.info.title) bar \(bar) -> \(b.info.title) bar \(sb.bar(atBeat: toBeat)) (starts at \(sb.startBar), full at \(sb.firstFull)), kicks \(String(format: "%+.1f / %+.1f", ka * 1000, kb * 1000)) ms, nudge \(String(format: "%+.1f", nudge * 60000 / b.analysis.bpm)) ms, \(bars) bars, clash \(clash), wide \(tr.wide), twin \(tr.twin), key shift \(tr.pitch), tempo \(tr.tempoFrom) -> \(tr.tempoTo)")
         return tr
     }
 
@@ -402,28 +553,26 @@ public final class Session {
             engine.start(tr.to, at: tr.startBeat, trackBeat: tr.toTrackBeat, tag: tr.tag)
         }
         schedule(tr, from: 0, start: tr.startBeat, length: tr.length)
+        note(tr.technique)
         tr.committed = true
         tr.manual = false
         transition = tr
         plan = nil
-        log?("commit \(tr.style.rawValue) start \(tr.startBeat) length \(tr.length)")
+        log?("commit \(tr.technique.rawValue) start \(tr.startBeat) length \(tr.length)")
     }
 
     private func schedule(_ tr: Transition, from p0: Double, start: Double, length: Double) {
         let span = max(1e-6, 1 - p0)
+        func at(_ p: Double) -> Double { start + (p - p0) / span * length }
         for lane in tr.lanes {
-            for seg in lane.segs where seg.p1 > p0 {
-                let a = max(seg.p0, p0)
-                engine.ramp(deck: lane.deck, lane.param, to: seg.v, start: start + (a - p0) / span * length, end: start + (seg.p1 - p0) / span * length, tag: tr.tag)
-            }
+            for seg in lane.segs where seg.p1 > p0 { engine.ramp(deck: lane.deck, lane.param, to: seg.v, start: at(max(seg.p0, p0)), end: at(seg.p1), tag: tr.tag) }
         }
-        if abs(tr.tempoTo - tr.tempoFrom) > 1e-6 { engine.tempoRamp(to: tr.tempoTo, start: start, end: start + length, tag: tr.tag) }
+        for cue in tr.cues where cue.p >= p0 { engine.event(cue.type, deck: cue.deck, at: at(cue.p), value: cue.value, from: cue.from, tag: tr.tag) }
         engine.stop(tr.from, at: start + length, tag: tr.tag)
     }
 
     private func applyManual(_ tr: Transition) {
         for lane in tr.lanes { engine.set(lane.deck, lane.param, Float(lane.value(at: tr.progress))) }
-        engine.setTempo(tr.tempoFrom + (tr.tempoTo - tr.tempoFrom) * tr.progress)
     }
 
     private func resumeAuto(_ tr: inout Transition) {
@@ -443,7 +592,20 @@ public final class Session {
         guard let c = current, !paused else { return }
         let s = engine.state
         if transition == nil {
-            guard mash == nil, let n = nextDeck, var tr = planBlend(from: c, to: n, auto: false, s), tr.style == .blend, let a = decks[c].track else { return }
+            guard mash == nil else {
+                say("Turn the mashup off first")
+                return
+            }
+            guard let n = nextDeck, let a = decks[c].track, let b = decks[n].track else {
+                say(queue.isEmpty ? "Queue a song to blend into" : "Next song is still loading")
+                return
+            }
+            let ratio = b.analysis.bpm / a.analysis.bpm
+            guard ratio < 1.34, ratio > 0.75 else {
+                say("Too far apart in tempo to blend by hand, press space")
+                return
+            }
+            guard var tr = planBlend(from: c, to: n, auto: false, byHand: true, s), tr.style == .blend else { return }
             let bar = nextBar(a.structure, after: s.deck(c).beat, ahead: 0.25, every: 1)
             tr.startBeat = a.structure.beat(ofBar: bar) - s.deck(c).offset
             tr.manual = true
@@ -457,6 +619,10 @@ public final class Session {
         }
         guard var tr = transition, tr.style == .blend else { return }
         if !tr.manual {
+            if tr.technique.scripted {
+                say("\(tr.technique.label) runs on its own")
+                return
+            }
             tr.progress = tr.progress(atBeat: s.masterBeat)
             engine.cancel(tag: tr.tag)
             tr.manual = true
@@ -492,6 +658,7 @@ public final class Session {
         current = tr.to
         if let id = decks[tr.to].track?.info.id, let i = queue.firstIndex(where: { $0.id == id }) { queue.remove(at: i) }
         unloadAt[tr.from] = beat + (tr.style == .echo ? 16 : tr.style == .blend ? 12 : 4)
+        if tr.style == .blend, abs(engine.state.masterBpm - tr.tempoTo) > 0.05 { engine.tempoRamp(to: tr.tempoTo, start: beat, end: beat + 32, tag: nextTag()) }
         countdownBars = nil
         plan = nil
         planEpoch += 1
@@ -544,9 +711,10 @@ public final class Session {
         let near = nextBar(sa, after: da.beat, ahead: 1, every: 1)
         let bar = sa.beat(ofBar: ahead) - da.beat <= 9 ? ahead : near
         let at = sa.beat(ofBar: bar) - da.offset
+        if let same = twinBar(a, bar: bar, b) { bBar = same }
         let tag = nextTag()
         let match = Key.match(effectiveKey(c), b.analysis.key)
-        let shift = match.score > 0 ? match.shift : 0
+        let shift = twinShift(a, b).map { decks[c].pitch + $0 } ?? (match.score > 0 ? match.shift : 0)
         decks[n].pitch = shift
         engine.event(Int32(BE_EV_PITCH), deck: n, at: .nan, value: Double(shift), tag: tag)
         for st in Stem.allCases { engine.set(n, st.param, 0) }
@@ -573,8 +741,10 @@ public final class Session {
         t.structure.beat(ofBar: t.structure.drops.first ?? t.structure.firstFull)
     }
 
-    private func fullBeat(_ t: LoadedTrack) -> Double { t.structure.beat(ofBar: t.structure.firstFull) }
-    private func startBeat(_ t: LoadedTrack) -> Double { t.structure.beat(ofBar: t.structure.startBar) }
+    private func entryBeat(_ t: LoadedTrack, slam: Bool = false) -> Double {
+        let st = t.structure, first = max(0, st.firstSound)
+        return st.beat(ofBar: slam && st.firstFull > first && st.firstFull - first <= 4 ? st.firstFull : first)
+    }
 
     private func prepareFull(_ deck: Int) {
         for st in Stem.allCases { engine.set(deck, st.param, 1) }
@@ -584,7 +754,7 @@ public final class Session {
         engine.set(deck, Int32(BE_P_ECHO), 0)
     }
 
-    private func cut(_ style: Transition.Style, lead: Double = 0) {
+    private func cut(_ style: Transition.Style, lead: Double = 0, technique: Technique? = nil) {
         guard let c = current, !paused, let a = decks[c].track else { return }
         guard transition == nil else {
             say("Wait for the mix to finish")
@@ -598,26 +768,33 @@ public final class Session {
         let n = nextDeck, b = n.flatMap { decks[$0].track }
         let tag = nextTag()
         let filter = Int32(BE_P_FILTER), echo = Int32(BE_P_ECHO), volume = Int32(BE_P_VOLUME)
+        func line(_ ahead: Double) -> Double { sa.beat(ofBar: nextBar(sa, after: da.beat, ahead: ahead, every: 1)) - da.offset }
         var tr: Transition?
         switch style {
         case .build:
-            let start = sa.beat(ofBar: nextBar(sa, after: da.beat, ahead: 0.5, every: 1)) - da.offset, end = start + 16
-            engine.ramp(deck: c, filter, to: 0.72, start: start, end: end, curve: .easeIn, tag: tag)
-            for (before, len) in [(8.0, 1.0), (4.0, 0.5), (2.0, 0.25), (1.0, 0.125)] { engine.event(Int32(BE_EV_ROLL), deck: c, at: end - before, value: len, tag: tag) }
+            let short = technique == .roll && n != nil && b != nil
+            let span = short ? 8.0 : 16.0
+            let end = short ? line(9.5) : line(0.5) + 16, start = end - span
+            engine.ramp(deck: c, filter, to: short ? 0.6 : 0.72, start: start, end: end, curve: .easeIn, tag: tag)
+            for (before, len) in [(8.0, 1.0), (4.0, 0.5), (2.0, 0.25), (1.0, 0.125)] {
+                engine.event(Int32(BE_EV_ROLL), deck: c, at: end - (short ? before / 2 : before), value: len, tag: tag)
+            }
             engine.event(Int32(BE_EV_UNROLL), deck: c, at: end, tag: tag)
             if let n, let b {
+                let landing = short ? entryBeat(b, slam: true) : dropBeat(b)
                 prepareFull(n)
-                engine.start(n, at: end, trackBeat: dropBeat(b), tag: tag)
+                engine.start(n, at: end, trackBeat: landing, tag: tag)
                 engine.tempoRamp(to: b.analysis.bpm, start: end, end: end, tag: tag)
                 engine.stop(c, at: end, tag: tag)
-                tr = Transition(style: .build, from: c, to: n, startBeat: start, length: 16, toTrackBeat: dropBeat(b), tempoFrom: s.masterBpm, tempoTo: b.analysis.bpm, tag: tag)
+                tr = Transition(style: .build, from: c, to: n, startBeat: start, length: span, toTrackBeat: landing, tempoFrom: s.masterBpm, tempoTo: b.analysis.bpm, tag: tag)
+                tr?.name = short ? "ROLL" : "BUILD"
             } else {
                 engine.ramp(deck: c, filter, to: 0, start: end, end: end + 0.03, tag: tag)
                 busyUntil = end + 1
             }
         case .echo:
             let washed = lead > 0 && n != nil && b != nil
-            let end = sa.beat(ofBar: nextBar(sa, after: da.beat, ahead: 1.5 + (washed ? lead : 0), every: 1)) - da.offset
+            let end = line(1.5 + (washed ? lead : 0))
             if washed {
                 engine.ramp(deck: c, filter, to: 0.62, start: end - lead, end: end - 0.5, curve: .easeIn, tag: tag)
                 engine.ramp(deck: c, echo, to: 0.85, start: end - min(lead, 3), end: end - 0.5, tag: tag)
@@ -628,22 +805,38 @@ public final class Session {
                 prepareFull(n)
                 engine.ramp(deck: c, volume, to: 0, start: end - 0.08, end: end, tag: tag)
                 engine.ramp(deck: c, echo, to: 0, start: end, end: end + 0.05, tag: tag)
-                engine.start(n, at: end, trackBeat: startBeat(b), tag: tag)
+                engine.start(n, at: end, trackBeat: entryBeat(b), tag: tag)
                 engine.tempoRamp(to: b.analysis.bpm, start: end, end: end, tag: tag)
                 engine.stop(c, at: end + 0.1, tag: tag)
                 let span = washed ? lead : 1
-                tr = Transition(style: .echo, from: c, to: n, startBeat: end - span, length: span, toTrackBeat: startBeat(b), tempoFrom: s.masterBpm, tempoTo: b.analysis.bpm, tag: tag)
+                tr = Transition(style: .echo, from: c, to: n, startBeat: end - span, length: span, toTrackBeat: entryBeat(b), tempoFrom: s.masterBpm, tempoTo: b.analysis.bpm, tag: tag)
+                tr?.name = washed ? "WASH" : "ECHO"
             } else {
                 engine.ramp(deck: c, echo, to: 0, start: end, end: end + 0.1, tag: tag)
             }
+        case .spin:
+            guard let n, let b else {
+                say(queue.isEmpty ? "Queue a song to spin into" : "Next song is still loading")
+                return
+            }
+            let end = line(2.5)
+            engine.event(Int32(BE_EV_SPIN), deck: c, at: end - 1.5, value: 1.5, tag: tag)
+            engine.ramp(deck: c, volume, to: 0, start: end - 0.7, end: end - 0.04, tag: tag)
+            prepareFull(n)
+            engine.start(n, at: end, trackBeat: entryBeat(b, slam: true), tag: tag)
+            engine.tempoRamp(to: b.analysis.bpm, start: end, end: end, tag: tag)
+            engine.stop(c, at: end, tag: tag)
+            tr = Transition(style: .spin, from: c, to: n, startBeat: end - 2, length: 2, toTrackBeat: entryBeat(b, slam: true), tempoFrom: s.masterBpm, tempoTo: b.analysis.bpm, tag: tag)
+            tr?.name = "SPIN"
         case .brake:
-            let end = sa.beat(ofBar: nextBar(sa, after: da.beat, ahead: 2, every: 1)) - da.offset
+            let end = line(2)
             engine.event(Int32(BE_EV_BRAKE), deck: c, at: end - 1, value: 1, tag: tag)
             if let n, let b {
                 prepareFull(n)
-                engine.start(n, at: end, trackBeat: startBeat(b), tag: tag)
+                engine.start(n, at: end, trackBeat: entryBeat(b), tag: tag)
                 engine.tempoRamp(to: b.analysis.bpm, start: end, end: end, tag: tag)
-                tr = Transition(style: .brake, from: c, to: n, startBeat: end - 1, length: 1, toTrackBeat: startBeat(b), tempoFrom: s.masterBpm, tempoTo: b.analysis.bpm, tag: tag)
+                tr = Transition(style: .brake, from: c, to: n, startBeat: end - 1, length: 1, toTrackBeat: entryBeat(b), tempoFrom: s.masterBpm, tempoTo: b.analysis.bpm, tag: tag)
+                tr?.name = "BRAKE"
             } else {
                 pauseAfterBrake = true
             }
@@ -651,11 +844,34 @@ public final class Session {
             break
         }
         if var tr {
+            if let technique {
+                tr.technique = technique
+                note(technique)
+            }
             tr.committed = true
             transition = tr
             plan = nil
-            log?("commit \(style.rawValue) start \(tr.startBeat) end \(tr.endBeat)")
+            log?("commit \(tr.label.lowercased()) start \(tr.startBeat) end \(tr.endBeat)")
         }
+    }
+
+    public func rollBegin(hold: Bool = true) {
+        guard let c = current, !paused, decks[c].track != nil, transition?.style != .build else { return }
+        let d = engine.state.deck(c)
+        guard d.rolling == 0, d.playing != 0 else { return }
+        let at = ((d.beat + 0.06) * 2).rounded(.up) / 2 - d.offset
+        rollTag = nextTag()
+        rollLen = 0.5
+        rollDeck = c
+        engine.event(Int32(BE_EV_ROLL), deck: c, at: at, value: rollLen, tag: rollTag)
+        if !hold { engine.event(Int32(BE_EV_UNROLL), deck: c, at: at + 2, tag: rollTag) }
+    }
+
+    public func rollEnd() {
+        guard let d = rollDeck else { return }
+        rollDeck = nil
+        engine.cancel(tag: rollTag)
+        engine.event(Int32(BE_EV_UNROLL), deck: d, at: .nan)
     }
 
     private func dropJump() {
@@ -696,6 +912,13 @@ public final class Session {
     public func scaleLoop(_ factor: Double) {
         guard let c = current else { return }
         let da = engine.state.deck(c)
+        if let d = rollDeck, da.rolling != 0 {
+            if factor < 1 {
+                rollLen = max(0.0625, rollLen * factor)
+                engine.event(Int32(BE_EV_ROLL), deck: d, at: .nan, value: rollLen)
+            }
+            return
+        }
         guard da.looping != 0 else { return }
         loopLen[c] = min(16, max(0.125, loopLen[c] * factor))
         engine.event(Int32(BE_EV_LOOP), deck: c, at: .nan, value: loopLen[c], from: loopStart[c])
@@ -708,6 +931,8 @@ public final class Session {
         if hint != nil, Date() > hintUntil { hint = nil }
         let loopNow = current.map { s.deck($0).looping != 0 } ?? false
         if loopNow != looping { looping = loopNow }
+        let rollNow = current.map { s.deck($0).rolling != 0 } ?? false
+        if rollNow != rolling { rolling = rollNow }
         if let tr = transition {
             let p = tr.progress(atBeat: beat)
             if mixProgress == nil || abs(p - (mixProgress ?? 0)) > 0.012 || (p >= 1 && mixProgress != 1) { mixProgress = p }
@@ -723,6 +948,7 @@ public final class Session {
         }
         guard let c = current else {
             if countdownBars != nil { countdownBars = nil }
+            if upcoming != nil { upcoming = nil }
             return
         }
         if let tr = transition {
@@ -755,6 +981,7 @@ public final class Session {
         }
         guard autoMix, mash == nil, !paused, dc.looping == 0, !scratching[c], beat >= busyUntil, let n = nextDeck, let a = decks[c].track, let b = decks[n].track else {
             if countdownBars != nil { countdownBars = nil }
+            if upcoming != nil { upcoming = nil }
             return
         }
         let key = "\(a.info.id)|\(b.info.id)|\(s.epoch)|\(planEpoch)"
@@ -762,24 +989,30 @@ public final class Session {
             plan = planBlend(from: c, to: n, auto: true, s)
             planKey = key
         }
+        if upcoming != plan?.technique { upcoming = plan?.technique }
         guard var p = plan else { return }
         let left = p.startBeat - beat
         let shown = max(0, Int((left / 4).rounded(.up)))
         if countdownBars != shown { countdownBars = shown }
-        if p.style == .echo {
-            if left < 21.4, left > 17.6 {
-                cut(.echo, lead: 16)
-            } else if left < 13.4, left > 9.6 {
-                cut(.echo, lead: 8)
-            } else if left < 6, left > 2.2 {
-                cut(.echo)
-            } else if left <= 0.5 {
-                plan = nil
+        if p.style == .blend {
+            if left < 6 {
+                if left > 0.5 {
+                    commit(&p)
+                } else {
+                    plan = nil
+                }
             }
-        } else if left < 6 {
-            if left > 0.5 {
-                commit(&p)
-            } else {
+            return
+        }
+        switch p.technique {
+        case .roll where left < 13.4 && left > 9.6: cut(.build, technique: .roll)
+        case .spin where left < 6.4 && left > 3.4: cut(.spin, technique: .spin)
+        case .wash where left < 21.4 && left > 17.6: cut(.echo, lead: 16, technique: .wash)
+        case .wash where left < 13.4 && left > 9.6: cut(.echo, lead: 8, technique: .wash)
+        default:
+            if left < 5.4, left > 2.2 {
+                cut(.echo, technique: .wash)
+            } else if left <= 0.5 {
                 plan = nil
             }
         }

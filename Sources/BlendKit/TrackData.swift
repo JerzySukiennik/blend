@@ -5,7 +5,7 @@ import BlendEngine
 import Foundation
 
 public struct Analysis: Codable {
-    public static let currentVersion = 15
+    public static let currentVersion = 16
 
     public var version = Analysis.currentVersion
     public var bpm: Double
@@ -223,6 +223,10 @@ public final class LoadedTrack {
 
     deinit { be_track_release(raw) }
 
+    public func kickOffset(fromBeat start: Double, beats count: Int) -> Double {
+        be_local_phase(raw, analysis.firstBeatFrame, fpb, start, Int32(count))
+    }
+
     public static func cachedAnalysis(_ info: TrackInfo) -> Analysis? {
         guard let data = try? Data(contentsOf: info.analysisURL), let a = try? JSONDecoder().decode(Analysis.self, from: data), a.version == Analysis.currentVersion else { return nil }
         return a
@@ -238,9 +242,10 @@ public final class LoadedTrack {
         }
         var beats: [Double] = [], downbeats: [Double] = []
         if let data = try? Data(contentsOf: info.beatsURL), let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            beats = (json["beats"] as? [NSNumber])?.map(\.doubleValue) ?? []
+            beats = singleLevel((json["beats"] as? [NSNumber])?.map(\.doubleValue) ?? [])
             downbeats = (json["downbeats"] as? [NSNumber])?.map(\.doubleValue) ?? []
         }
+        if let tempo = hint(info, "tempo") { be_track_set_tempo_hint(raw, tempo) }
         var warp = be_warp()
         var analysis: Analysis
         var fresh = false
@@ -248,7 +253,7 @@ public final class LoadedTrack {
             analysis = cached
             if cached.straightened { be_track_straighten(raw, &beats, Int32(beats.count), &downbeats, Int32(downbeats.count), 0, &warp) }
         } else {
-            let hint = downbeatHint(info)
+            let hint = hint(info, "downbeat")
             if let hint { downbeats.append(hint) }
             if straightens { be_track_straighten(raw, &beats, Int32(beats.count), &downbeats, Int32(downbeats.count), 1, &warp) }
             let marked = hint == nil ? nil : downbeats.removeLast()
@@ -273,10 +278,31 @@ public final class LoadedTrack {
         return LoadedTrack(info: info, raw: raw, analysis: analysis, wave: wave, warp: warp)
     }
 
-    static func downbeatHint(_ info: TrackInfo) -> Double? {
+    static func singleLevel(_ beats: [Double]) -> [Double] {
+        guard beats.count >= 64 else { return beats }
+        let gaps = zip(beats.dropFirst(), beats).map { $0 - $1 }.sorted()
+        let median = gaps[gaps.count / 2], high = gaps[gaps.count * 4 / 5]
+        guard median < 0.62 * high else { return beats }
+        let long = gaps.filter { $0 > 0.75 * high }
+        let full = long[long.count / 2], half = full / 2
+        var out = [beats[0]]
+        var i = 0
+        while i + 1 < beats.count {
+            if i + 2 < beats.count, abs(beats[i + 1] - beats[i] - half) < 0.2 * half, abs(beats[i + 2] - beats[i] - full) < 0.15 * full {
+                out.append(beats[i + 2])
+                i += 2
+            } else {
+                out.append(beats[i + 1])
+                i += 1
+            }
+        }
+        return out
+    }
+
+    static func hint(_ info: TrackInfo, _ key: String) -> Double? {
         guard let data = try? Data(contentsOf: info.folder.appendingPathComponent("meta.json")),
               let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return (meta["downbeat"] as? NSNumber)?.doubleValue
+        return (meta[key] as? NSNumber)?.doubleValue
     }
 
     static func analyze(_ info: TrackInfo, raw: OpaquePointer, frames: Int, beats: [Double], downbeats: [Double], marked: Double?) throws -> Analysis {

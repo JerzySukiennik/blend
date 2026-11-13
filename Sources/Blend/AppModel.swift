@@ -20,6 +20,7 @@ final class AppModel {
     var tutorial: Int?
     var search = ""
     var selected = 0
+    var onlyFits = false
     var dropTargeted = false
 
     @ObservationIgnored var audio: AudioOutput?
@@ -28,14 +29,24 @@ final class AppModel {
     @ObservationIgnored var lastActivity = Date()
     @ObservationIgnored private let listeners = NSHashTable<AnyObject>.weakObjects()
     @ObservationIgnored var onModeChange: ((Mode) -> Void)?
+    @ObservationIgnored var onWake: (() -> Void)?
 
     static let tutorialSteps = 6
 
     var filtered: [TrackInfo] {
         func plain(_ s: String) -> String { s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).filter { $0.isLetter || $0.isNumber || $0 == " " } }
         let q = plain(search.trimmingCharacters(in: .whitespaces))
-        guard !q.isEmpty else { return session.library }
-        return session.library.filter { plain($0.title).contains(q) || plain($0.artist).contains(q) }
+        var list = q.isEmpty ? session.library : session.library.filter { plain($0.title).contains(q) || plain($0.artist).contains(q) }
+        if onlyFits, let ref = session.mixReference {
+            let scored = list.filter { $0.id != ref.id }.map { (info: $0, fit: session.fit($0, to: ref)) }.filter { $0.fit >= 2 }
+            list = scored.enumerated().sorted { ($1.element.fit, $0.offset) < ($0.element.fit, $1.offset) }.map(\.element.info)
+        }
+        return list
+    }
+
+    func toggleFits() {
+        onlyFits.toggle()
+        selected = 0
     }
 
     func start(silent: Bool = false) {
@@ -49,6 +60,10 @@ final class AppModel {
     func setMode(_ new: Mode) {
         guard mode != new else { return }
         withAnimation(Theme.spring) { mode = new }
+        if new == .library {
+            session.reloadLibrary()
+            session.analyzeMissing()
+        }
         onModeChange?(new)
         touch()
     }
@@ -56,6 +71,11 @@ final class AppModel {
     func toggleMode() { setMode(mode == .console ? .library : .console) }
 
     func touch() { lastActivity = Date() }
+
+    func wake() {
+        touch()
+        onWake?()
+    }
 
     func register(_ view: FrameDriven) { listeners.add(view) }
 

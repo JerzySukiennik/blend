@@ -14,6 +14,7 @@ struct TestOptions {
     var skip = 0.0
     var keys: [(Double, String)] = []
     var tour: Int?
+    var fits = false
 
     init(_ argv: [String]) {
         var i = 1
@@ -23,6 +24,7 @@ struct TestOptions {
             case "--silent": silent = true
             case "--console": console = true
             case "--play": play = true
+            case "--fits": fits = true
             case "--queue": queue = next.split(separator: "|").map(String.init); i += 1
             case "--snapshot": snapshot = next; i += 1
             case "--after": after = Double(next) ?? 3; i += 1
@@ -107,8 +109,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             self.driveTutorial()
         }
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        model.onWake = { [weak self] in self?.link?.isPaused = false }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
             guard let self else { return event }
+            if event.type == .keyUp {
+                if event.charactersIgnoringModifiers?.lowercased() == "r" { self.model.session.rollEnd() }
+                return event
+            }
             return self.handleKey(event) ? nil : event
         }
         if !options.testing, !UserDefaults.standard.bool(forKey: "tutorialDone"), !model.session.library.isEmpty {
@@ -170,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if let info = session.library.first(where: { $0.id == id || $0.title == id }) { session.enqueue(info) }
         }
         if options.console { model.mode = .console }
+        if options.fits { model.onlyFits = true }
         if options.testing {
             Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.model.frame() }
         }
@@ -200,6 +208,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     self.model.mode = self.model.mode == .console ? .library : .console
                 } else if key == "space" {
                     session.perform(.mix)
+                } else if key == "m" {
+                    session.cycleStyle()
                 } else if let move = Move.allCases.first(where: { $0.key.lowercased() == key }) {
                     session.perform(move)
                 } else if let n = Int(key) {
@@ -235,6 +245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.makeFirstResponder(trackpad)
         } else {
             trackpad.releaseAll()
+            model.session.rollEnd()
             CGAssociateMouseAndMouseCursorPosition(1)
             NSCursor.unhide()
         }
@@ -298,6 +309,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "l": session.perform(.loop)
         case "e": session.perform(.echo)
         case "k": session.perform(.brake)
+        case "x": session.perform(.spin)
+        case "r": session.rollBegin()
+        case "m": session.cycleStyle(e.modifierFlags.contains(.shift) ? -1 : 1)
         case "1": session.toggleStem(0, .vocals)
         case "2": session.toggleStem(0, .drums)
         case "3": session.toggleStem(0, .bass)

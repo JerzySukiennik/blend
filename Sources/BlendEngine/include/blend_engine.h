@@ -38,7 +38,8 @@ enum {
     BE_EV_BRAKE = 7,
     BE_EV_ROLL = 8,
     BE_EV_UNROLL = 9,
-    BE_EV_PITCH = 10
+    BE_EV_PITCH = 10,
+    BE_EV_SPIN = 11
 };
 
 enum { BE_CURVE_LINEAR = 0, BE_CURVE_SMOOTH = 1, BE_CURVE_EASE_IN = 2, BE_CURVE_EASE_OUT = 3 };
@@ -97,6 +98,7 @@ int16_t *be_track_stem(be_track *t, int32_t stem);
 int64_t be_track_frames(be_track *t);
 void be_track_set_grid(be_track *t, double bpm, double firstBeatFrame);
 void be_track_set_gain(be_track *t, float gain);
+void be_track_set_tempo_hint(be_track *t, double bpm);
 void be_track_release(be_track *t);
 
 void be_deck_load(be_engine *e, int32_t deck, be_track *t);
@@ -126,6 +128,7 @@ typedef struct {
 } be_analysis;
 
 int32_t be_analyze(const be_track *t, const double *beatTimes, int32_t nBeats, const double *downbeatTimes, int32_t nDownbeats, be_analysis *out);
+double be_local_phase(const be_track *t, double firstBeatFrame, double framesPerBeat, double fromBeat, int32_t beats);
 int32_t be_beat_energy(const be_track *t, double bpm, double firstBeatFrame, float *out, int32_t maxBeats);
 int32_t be_waveform(const be_track *t, double pointsPerSecond, uint8_t *out, int32_t maxPoints);
 

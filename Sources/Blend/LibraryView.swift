@@ -1,4 +1,4 @@
-// Blend app: the library screen (search, song list with fit indicator, queue column, file drop).
+// Blend app: the library screen (search, blend filter, song list with fit indicator, queue column, file drop).
 import BlendKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -21,16 +21,19 @@ struct LibraryView: View {
                     if let name = session.analyzing {
                         Text("Analyzing \(name)").font(.system(size: 12)).foregroundStyle(Theme.dim).lineLimit(1)
                     }
+                    FitsChip(model: model)
                 }
-                .padding(.horizontal, 14)
+                .padding(.leading, 14)
+                .padding(.trailing, 6)
                 .frame(height: 40)
                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.panel))
 
                 let list = model.filtered
                 if list.isEmpty {
                     VStack(spacing: 8) {
-                        Text(session.library.isEmpty ? "Your library is empty" : "Nothing matches").font(.system(size: 17, weight: .semibold))
-                        Text("Drop audio files anywhere in this window to add them.").font(.system(size: 13)).foregroundStyle(Theme.dim)
+                        let fitting = model.onlyFits && session.mixReference != nil
+                        Text(session.library.isEmpty ? "Your library is empty" : fitting ? "Nothing here blends smoothly with \(session.mixReference?.title ?? "it")" : "Nothing matches").font(.system(size: 17, weight: .semibold))
+                        Text(fitting ? "Turn off the filter to see every song. Blend can still cut into any of them." : "Drop audio files anywhere in this window to add them.").font(.system(size: 13)).foregroundStyle(Theme.dim)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -53,7 +56,7 @@ struct LibraryView: View {
                         }
                     }
                 }
-                Text("Click a song or press return to queue it.  Tab opens the console.  Drop audio files here to add your own.")
+                Text("Click a song or press return to queue it.  Tab opens the console.  The bars show how smoothly a song blends with the last one you picked.")
                     .font(.system(size: 12)).foregroundStyle(Theme.faint)
             }
             QueueColumn(model: model).frame(width: 320)
@@ -87,13 +90,40 @@ struct LibraryView: View {
     }
 }
 
+struct FitsChip: View {
+    let model: AppModel
+    @State private var hover = false
+
+    var body: some View {
+        let ref = model.session.mixReference
+        let on = model.onlyFits && ref != nil
+        HStack(spacing: 7) {
+            FitBars(level: 3, tint: on ? Theme.ink : (ref == nil ? Theme.faint : Theme.dim))
+            Text(ref.map { on ? "Blends with \($0.title)" : "Only what blends with \($0.title)" } ?? "Only what blends").lineLimit(1)
+        }
+        .font(.system(size: 12.5, weight: .semibold))
+        .foregroundStyle(on ? Theme.ink : (ref == nil ? Theme.faint : Theme.dim))
+        .padding(.horizontal, 11)
+        .frame(height: 28)
+        .frame(maxWidth: 300)
+        .fixedSize(horizontal: true, vertical: false)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(on ? Theme.text : (hover && ref != nil ? Theme.panelStrong : Theme.panel)))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture { if ref != nil { withAnimation(Theme.snappy) { model.toggleFits() } } }
+        .help(ref == nil ? "Play or queue a song first, then show only the songs that blend smoothly with it" : "Show only songs whose tempo and key blend smoothly with the last song you picked")
+        .animation(Theme.snappy, value: on)
+    }
+}
+
 struct FitBars: View {
     let level: Int
+    var tint = Theme.text
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 2) {
             ForEach(0..<3, id: \.self) { i in
-                RoundedRectangle(cornerRadius: 1).fill(i < level ? Theme.text : Theme.faint.opacity(0.5)).frame(width: 3, height: CGFloat(5 + i * 4))
+                RoundedRectangle(cornerRadius: 1).fill(i < level ? tint : Theme.faint.opacity(0.5)).frame(width: 3, height: CGFloat(5 + i * 4))
             }
         }
         .frame(height: 13, alignment: .bottom)
@@ -126,7 +156,7 @@ struct LibraryRow: View {
                 Text(bpmText(a.bpm)).font(.system(size: 13.5, weight: .semibold)).monospacedDigit().frame(width: 46, alignment: .trailing)
                 Text(a.keyName).font(.system(size: 13)).foregroundStyle(Theme.dim).frame(width: 36, alignment: .leading)
                 Text(timeText(a.seconds)).font(.system(size: 12.5)).monospacedDigit().foregroundStyle(Theme.dim).frame(width: 38, alignment: .trailing)
-                FitBars(level: session.current == nil ? 0 : session.fit(info)).frame(width: 16).opacity(session.current == nil ? 0 : 1)
+                FitBars(level: session.fit(info)).frame(width: 16).opacity(session.mixReference == nil || session.mixReference?.id == info.id ? 0 : 1)
             } else {
                 Text("…").foregroundStyle(Theme.dim).frame(width: 150, alignment: .trailing)
             }
@@ -233,13 +263,17 @@ struct QueueRow: View {
                     iconButton("xmark") { session.dequeue(info) }
                 }
             } else {
-                FitBars(level: session.fit(info)).opacity(session.current == nil ? 0 : 1)
+                FitBars(level: session.fit(info, to: previous(session))).opacity(previous(session) == nil ? 0 : 1)
             }
         }
         .padding(.horizontal, 6)
         .frame(height: 50)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(hover ? Theme.panel : Color.clear))
         .onHover { hover = $0 }
+    }
+
+    private func previous(_ session: Session) -> TrackInfo? {
+        index > 0 && index <= session.queue.count ? session.queue[index - 1] : session.current.flatMap { session.decks[$0].track?.info }
     }
 
     private func detail(_ session: Session) -> String {

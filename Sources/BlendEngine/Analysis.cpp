@@ -203,6 +203,21 @@ bool fitGrid(const double *bt, int n, double &T, double &t0, float &conf, double
     return true;
 }
 
+double hitWeight(const std::vector<float> &x, double t0, double T) {
+    const int w = (int)(0.04 * kRate);
+    double acc = 0;
+    int n = 0;
+    for (double t = t0; (t + 0.05) * kRate < (double)x.size(); t += T) {
+        if (t < 0) continue;
+        size_t i0 = (size_t)(t * kRate);
+        double e = 0;
+        for (int i = 0; i < w; ++i) e += std::fabs(x[i0 + i]);
+        acc += e;
+        ++n;
+    }
+    return n ? acc / n : 0.0;
+}
+
 double refinePhase(const std::vector<float> &x, double t0, double T, bool lowpass) {
     const int D = 16;
     size_t n = x.size() / D;
@@ -400,8 +415,38 @@ void be_track_set_gain(be_track *t, float gain) {
     if (t) t->gain = gain;
 }
 
+void be_track_set_tempo_hint(be_track *t, double bpm) {
+    if (t) t->tempoHint = bpm;
+}
+
 void be_track_release(be_track *t) {
     if (t && t->refs.fetch_sub(1) == 1) delete t;
+}
+
+static double localPhase(const be_track *t, double firstBeatFrame, double framesPerBeat, double fromBeat, int beats) {
+    int lead = be_lead_stem(t);
+    unsigned mask = lead >= 0 ? (1u << lead) : 0xFu;
+    int64_t i0 = (int64_t)(firstBeatFrame + (fromBeat - 1) * framesPerBeat), i1 = (int64_t)(firstBeatFrame + (fromBeat + beats + 1) * framesPerBeat);
+    if (i0 < 0) i0 = 0;
+    if (i1 > t->frames) i1 = t->frames;
+    if (i1 - i0 < (int64_t)(kRate * 3)) return 1.0;
+    std::vector<float> x((size_t)(i1 - i0), 0.0f);
+    for (int s = 0; s < t->stems; ++s) {
+        if (!(mask & (1u << s))) continue;
+        const int16_t *d = t->pcm[s].data();
+        for (int64_t i = i0; i < i1; ++i) x[(size_t)(i - i0)] += (d[2 * i] + d[2 * i + 1]) * (0.5f / 32768.0f);
+    }
+    double T = framesPerBeat / kRate, t0 = (firstBeatFrame + fromBeat * framesPerBeat - (double)i0) / kRate;
+    while (t0 < 0.1) t0 += T;
+    return refinePhase(x, t0, T, !(t->stems == BE_STEMS && lead == kDrums)) - t0;
+}
+
+double be_local_phase(const be_track *t, double firstBeatFrame, double framesPerBeat, double fromBeat, int32_t beats) {
+    if (!t || beats < 16 || framesPerBeat < 1000) return 0.0;
+    int half = beats / 2;
+    double early = localPhase(t, firstBeatFrame, framesPerBeat, fromBeat, half), late = localPhase(t, firstBeatFrame, framesPerBeat, fromBeat + half, half);
+    if (std::fabs(early - late) > 0.004 || std::fabs(early + late) > 0.03) return 0.0;
+    return 0.5 * (early + late);
 }
 
 int32_t be_analyze(const be_track *t, const double *beatTimes, int32_t nBeats, const double *downbeatTimes, int32_t nDownbeats, be_analysis *out) {
@@ -443,6 +488,13 @@ int32_t be_analyze(const be_track *t, const double *beatTimes, int32_t nBeats, c
             T = roundT;
             t0 = roundT0;
         }
+    }
+    double octave = t->tempoHint > 0 ? 60.0 / T / t->tempoHint : 1.0;
+    if (60.0 / T > 176.0 || (octave > 1.7 && octave < 2.3)) {
+        if (hitWeight(rhythm, t0 + T, 2 * T) > hitWeight(rhythm, t0, 2 * T)) t0 += T;
+        T *= 2;
+    } else if (octave > 0.43 && octave < 0.59) {
+        T *= 0.5;
     }
     t0 = refinePhase(rhythm, t0, T, !(stems && lead == kDrums));
     if (!ok) conf = std::min(conf, 0.3f + be_kick_tightness(leadPcm(), t->frames, T, t0, lead < 0));

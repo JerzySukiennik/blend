@@ -22,7 +22,7 @@ constexpr int kRing = 1 << 17;
 constexpr int kRingMask = kRing - 1;
 constexpr int kDrums = 1;
 
-enum { MODE_SLAVED = 0, MODE_SCRATCH = 1, MODE_SPINUP = 2, MODE_BRAKE = 3 };
+enum { MODE_SLAVED = 0, MODE_SCRATCH = 1, MODE_SPINUP = 2, MODE_BRAKE = 3, MODE_REWIND = 4 };
 enum { C_LOAD, C_SCHEDULE, C_CANCEL, C_PARAM, C_TEMPO, C_PLAY, C_STOP, C_CUE, C_SCR_BEGIN, C_SCR_MOVE, C_SCR_END, C_SYNC, C_RESET };
 
 struct IO {
@@ -193,6 +193,7 @@ struct Deck {
 
     double scratchTarget = 0, vrate = 0;
     double spinLeft = 0, brakeStep = 0;
+    double rewindFrom = 0, rewindTotal = 1, rewindT = 0;
 
     bool loop = false;
     double loopStart = 0, loopLen = 4;
@@ -411,6 +412,10 @@ struct Deck {
                     double k = spinLeft > n ? (double)n / spinLeft : 1.0;
                     r1 = vrate + (slaved - vrate) * k;
                     spinLeft -= n;
+                } else if (mode == MODE_REWIND) {
+                    rewindT += n;
+                    double u = rewindT >= rewindTotal ? 1.0 : rewindT / rewindTotal;
+                    r1 = u < 0.15 ? rewindFrom + (-3.2 - rewindFrom) * (u / 0.15) : -3.2 + 2.4 * (u - 0.15) / 0.85;
                 } else {
                     r1 = vrate - brakeStep * n;
                     if (r1 < 0.0) r1 = 0.0;
@@ -432,6 +437,10 @@ struct Deck {
                     pos = std::round(pos);
                     reattached = true;
                 } else if (mode == MODE_BRAKE && r1 <= 0.0) {
+                    playing = false;
+                    mode = MODE_SLAVED;
+                } else if (mode == MODE_REWIND && rewindT >= rewindTotal) {
+                    beginGhost();
                     playing = false;
                     mode = MODE_SLAVED;
                 }
@@ -615,6 +624,19 @@ struct be_engine {
             d.mode = MODE_BRAKE;
             break;
         }
+        case BE_EV_SPIN: {
+            if (!d.playing) break;
+            if (d.stretching) d.beginGhost();
+            d.stretching = false;
+            d.vrate = d.rate;
+            d.rewindFrom = d.rate;
+            d.rewindTotal = (ev.value > 0.01 ? ev.value : 1.5) * 60.0 / bpm * sr;
+            d.rewindT = 0;
+            d.rolling = false;
+            d.loop = false;
+            d.mode = MODE_REWIND;
+            break;
+        }
         case BE_EV_ROLL: {
             int len = (int)(ev.value * 60.0 / bpm * sr);
             if (len < 64) len = 64;
@@ -717,7 +739,7 @@ struct be_engine {
             break;
         case C_SCR_BEGIN:
             if (!d || !d->track || d->mode == MODE_SCRATCH) break;
-            d->wasPlaying = d->playing && d->mode != MODE_BRAKE;
+            d->wasPlaying = d->playing && d->mode != MODE_BRAKE && d->mode != MODE_REWIND;
             if (d->stretching) d->beginGhost();
             d->stretching = false;
             d->vrate = d->playing ? d->rate : 0.0;

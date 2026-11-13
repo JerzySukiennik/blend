@@ -19,6 +19,7 @@ struct be_track {
     std::vector<float> bend;
     int keyHint = -1;
     float keyHintStrength = 0.0f;
+    double tempoHint = 0.0;
 
     float bendAt(double frame) const {
         if (bend.empty() || frame < 0) return 0.0f;

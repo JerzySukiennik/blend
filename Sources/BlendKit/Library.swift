@@ -1,6 +1,13 @@
-// Blend kit: the song library on disk (folders with stems, cover, metadata) and file import.
+// Blend kit: the song library on disk (folders with stems, cover, metadata, optional twin link to another version of the same song) and file import.
 import AVFoundation
 import Foundation
+
+public struct Twin: Hashable, Codable {
+    public var of: String
+    public var map: [[Int]]
+    public var back: [[Int]]?
+    public var semitones = 0
+}
 
 public struct TrackInfo: Identifiable, Hashable, Codable {
     public var id: String
@@ -8,13 +15,15 @@ public struct TrackInfo: Identifiable, Hashable, Codable {
     public var artist: String
     public var folder: URL
     public var files: [String]
+    public var twin: Twin?
 
-    public init(id: String, title: String, artist: String, folder: URL, files: [String]) {
+    public init(id: String, title: String, artist: String, folder: URL, files: [String], twin: Twin? = nil) {
         self.id = id
         self.title = title
         self.artist = artist
         self.folder = folder
         self.files = files
+        self.twin = twin
     }
 
     public var hasStems: Bool { files.count == 4 }
@@ -55,15 +64,17 @@ public enum Library {
             return nil
         }
         var title = folder.lastPathComponent, artist = ""
+        var twin: Twin?
         if let data = try? Data(contentsOf: folder.appendingPathComponent("meta.json")),
            let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             title = meta["title"] as? String ?? title
             artist = meta["artist"] as? String ?? artist
+            if let t = meta["twin"] as? [String: Any], let of = t["of"] as? String, let map = t["map"] as? [[Int]] { twin = Twin(of: of, map: map, back: t["back"] as? [[Int]], semitones: t["semitones"] as? Int ?? 0) }
         } else if let dash = title.range(of: " - ") {
             artist = String(title[..<dash.lowerBound])
             title = String(title[dash.upperBound...])
         }
-        return TrackInfo(id: folder.lastPathComponent, title: title, artist: artist, folder: folder, files: files)
+        return TrackInfo(id: folder.lastPathComponent, title: title, artist: artist, folder: folder, files: files, twin: twin)
     }
 
     public static func importFile(_ url: URL) async -> TrackInfo? {
