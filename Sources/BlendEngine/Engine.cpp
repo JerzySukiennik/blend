@@ -34,7 +34,7 @@ struct Cmd {
     int type = 0;
     int deck = 0;
     int param = 0;
-    double a = 0;
+    double a = 0, b = 0;
     be_event ev{};
     be_track *track = nullptr;
 };
@@ -350,6 +350,28 @@ inline double readVar(const be_track *t, int stem, double pos, double r0, double
     const float sc = t->gain / 32768.0f;
     const int64_t F = t->frames;
     double p = pos, r = r0, dr = (r1 - r0) / n;
+    double fastest = std::max(std::fabs(r0), std::fabs(r1));
+    if (fastest > 1.25) {
+        int taps = fastest > 6.0 ? 6 : (int)std::ceil(fastest);
+        const float share = sc / taps;
+        for (int i = 0; i < n; ++i) {
+            float l = 0, rr = 0;
+            for (int j = 0; j < taps; ++j) {
+                double q = p + r * j / taps, fl = std::floor(q);
+                int64_t k = (int64_t)fl;
+                if (k < 1 || k + 2 >= F) continue;
+                float f = (float)(q - fl);
+                const int16_t *x = d + 2 * (k - 1);
+                l += hermite(x[0], x[2], x[4], x[6], f);
+                rr += hermite(x[1], x[3], x[5], x[7], f);
+            }
+            L[i] = l * share;
+            R[i] = rr * share;
+            p += r;
+            r += dr;
+        }
+        return p;
+    }
     for (int i = 0; i < n; ++i) {
         double fl = std::floor(p);
         int64_t k = (int64_t)fl;
@@ -396,7 +418,8 @@ struct Deck {
     bool stOn[BE_STEMS] = {false, false, false, false};
     int inLat = 0, outLat = 0;
 
-    double scratchTarget = 0, vrate = 0;
+    double scratchGoal = 0, scratchAim = 0, fingerRate = 0, fingerSpeed = 0, fingerGap = 0, fingerIdle = 0, vrate = 0;
+    float feel = 1.0f;
     double spinLeft = 0, brakeStep = 0;
     double rewindFrom = 0, rewindTotal = 1, rewindT = 0;
 
@@ -544,6 +567,7 @@ struct Deck {
         std::memset(w.bus[0], 0, sizeof(float) * n);
         std::memset(w.bus[1], 0, sizeof(float) * n);
         bool have[BE_STEMS] = {false, false, false, false};
+        float feel1 = 1.0f;
 
         if (playing) {
             double f = fpb();
@@ -613,10 +637,19 @@ struct Deck {
             } else {
                 double r0 = vrate, r1 = vrate;
                 if (mode == MODE_SCRATCH) {
-                    double target = (scratchTarget - pos) / (0.012 * sr);
-                    if (target > 8.0) target = 8.0;
-                    if (target < -8.0) target = -8.0;
-                    r1 = vrate + (target - vrate) * 0.45;
+                    fingerIdle += n;
+                    if (fingerIdle > std::max(1.7 * fingerGap, 0.028 * sr)) {
+                        fingerRate *= std::exp(-n / (0.006 * sr));
+                        scratchGoal = scratchAim = pos;
+                    } else {
+                        double step = std::fabs(fingerRate) * n, gap = scratchGoal - scratchAim;
+                        scratchAim += std::fabs(gap) <= step ? gap : (gap > 0 ? step : -step);
+                    }
+                    double want = fingerRate + (scratchAim - pos) / (0.1 * sr);
+                    if (want > 8.0) want = 8.0;
+                    if (want < -8.0) want = -8.0;
+                    r1 = vrate + (want - vrate) * (1.0 - std::exp(-n / (0.003 * sr)));
+                    if (std::fabs(fingerRate) < 0.002 && std::fabs(r1) < 0.004) r1 = 0;
                 } else if (mode == MODE_SPINUP) {
                     double k = spinLeft > n ? (double)n / spinLeft : 1.0;
                     r1 = vrate + (slaved - vrate) * k;
@@ -639,6 +672,7 @@ struct Deck {
                 pos = end;
                 vrate = r1;
                 rate = r1;
+                if (mode == MODE_SCRATCH || mode == MODE_SPINUP) feel1 = std::min(1.12f, std::pow((float)std::fabs(r1), 0.6f));
                 if (mode == MODE_SPINUP && spinLeft <= 0) {
                     mode = MODE_SLAVED;
                     offset = (pos - track->firstBeat) / f - beat1;
@@ -656,10 +690,11 @@ struct Deck {
             }
         }
 
-        const float inv = 1.0f / n;
+        const float inv = 1.0f / n, feel0 = feel;
+        feel = feel1;
         for (int s = 0; s < track->stems; ++s) {
             if (!have[s]) continue;
-            float a = sg0[s], b = sg1[s], d = (b - a) * inv, peak = 0;
+            float a = sg0[s] * feel0, b = sg1[s] * feel1, d = (b - a) * inv, peak = 0;
             float *sl = w.stem[s][0], *sr2 = w.stem[s][1];
             for (int i = 0; i < n; ++i) {
                 float g = a + d * i, x = sl[i] * g;
@@ -968,13 +1003,24 @@ struct be_engine {
             if (d->stretching) d->beginGhost();
             d->stretching = false;
             d->vrate = d->playing ? d->rate : 0.0;
-            d->scratchTarget = d->pos;
+            d->scratchGoal = d->scratchAim = d->pos;
+            d->fingerRate = d->fingerSpeed = 0;
+            d->fingerIdle = 0;
+            d->fingerGap = 0.016 * sr;
             d->mode = MODE_SCRATCH;
             d->playing = true;
             d->ended = false;
             break;
         case C_SCR_MOVE:
-            if (d && d->mode == MODE_SCRATCH) d->scratchTarget += c.a;
+            if (d && d->mode == MODE_SCRATCH) {
+                double gap = sr * (c.b > 0.004 ? (c.b < 0.05 ? c.b : 0.05) : (c.b > 0 ? 0.004 : 0.016));
+                d->scratchGoal += c.a;
+                double speed = c.a / gap;
+                d->fingerRate = speed + (speed - d->fingerSpeed) * 0.35;
+                d->fingerSpeed = speed;
+                d->fingerGap = gap;
+                d->fingerIdle = 0;
+            }
             break;
         case C_SCR_END:
             if (!d || d->mode != MODE_SCRATCH) break;
@@ -1200,12 +1246,13 @@ void be_schedule(be_engine *e, const be_event *ev) {
     e->cmds.push(c);
 }
 
-static void post(be_engine *e, int type, int deck, int param, double a) {
+static void post(be_engine *e, int type, int deck, int param, double a, double b = 0) {
     Cmd c;
     c.type = type;
     c.deck = deck;
     c.param = param;
     c.a = a;
+    c.b = b;
     e->cmds.push(c);
 }
 
@@ -1216,7 +1263,7 @@ void be_play(be_engine *e, int32_t deck, double trackBeat) { post(e, C_PLAY, dec
 void be_stop(be_engine *e, int32_t deck) { post(e, C_STOP, deck, 0, 0); }
 void be_cue(be_engine *e, int32_t deck, double trackBeat) { post(e, C_CUE, deck, 0, trackBeat); }
 void be_scratch_begin(be_engine *e, int32_t deck) { post(e, C_SCR_BEGIN, deck, 0, 0); }
-void be_scratch_move(be_engine *e, int32_t deck, double deltaFrames) { post(e, C_SCR_MOVE, deck, 0, deltaFrames); }
+void be_scratch_move(be_engine *e, int32_t deck, double deltaFrames, double seconds) { post(e, C_SCR_MOVE, deck, 0, deltaFrames, seconds); }
 void be_scratch_end(be_engine *e, int32_t deck) { post(e, C_SCR_END, deck, 0, 0); }
 void be_sync_phase(be_engine *e, int32_t deck) { post(e, C_SYNC, deck, 0, 0); }
 void be_reset(be_engine *e) { post(e, C_RESET, -1, 0, 0); }

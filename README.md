@@ -41,7 +41,7 @@ Built for one MacBook and one listener. The song library is private and is not p
 - **Output effects** (`F` cycles them): `RADIO` (a small mono speaker), `GLASS` (the party heard through a window), `HALL` (a big room), `LO-FI` (an old game console). They colour everything that plays, transitions included.
 - **Touch Bar**: `SWITCH` with a countdown, the four effects as toggles, a `STYLE` picker for the mix technique, a `ROLL` pad that stutters for as long as it is held, a `VOICE` button, and four dots that follow the beat with the number of bars left until the next automatic mix.
 - **Trackpad as the console** (Tab switches between cursor and console):
-  - left half and right half are the two platters, one finger scratches like vinyl, a finger held still stops the record
+  - left half and right half are the two platters, one finger scratches like vinyl, a finger held still stops the record. The record takes its speed from the measured speed of the finger, so the pitch glides instead of stepping with every touch report; a centimetre of finger travel is 55 ms of music, about what a 7-inch single gives under the hand; and like a stylus the sound gets quieter the slower the record moves and is silent when it stands still
   - two fingers up or down sweep a filter that springs back
   - a slide along the bottom edge is a crossfader that scrubs the blend by hand, at any tempo difference
   - a tap in a bottom corner plays or pauses that deck
@@ -54,7 +54,7 @@ Built for one MacBook and one listener. The song library is private and is not p
 - `Sources/BlendEngine`: C++ audio engine. Decks are slaved to a master beat clock, stems are time-stretched separately (Signalsmith Stretch), automation is scheduled in beats and fired sample-accurately. Also the analyzer (beat grid, downbeat and phrase phase, key, loudness) and the tempo straightener, which resamples a drifting song so its beats land on a constant grid and, when the speed change is large, keeps a pitch correction curve that the decks apply through the stretcher.
 - `Sources/BlendKit`: Swift. Library on disk, track loading, song structure, transition techniques and planning, the live session, and the trackpad gesture rules (`TouchBoard`, free of AppKit).
 - `Sources/Blend`: the app. SwiftUI for the chrome, Core Animation layers for platters and waveforms, raw `NSTouch` for the trackpad.
-- `Sources/blendtool`: offline tests. `selftest` checks beat sync and CPU cost, `touch` replays finger sequences through the gesture rules, `grid` measures how tightly the drums sit on the beat grid, `pairs` counts how the library's song pairs would be mixed, `voices` measures the level and the silences of every voice clip, `automix` renders a scripted session without audio output (`--trace` prints every lane during a transition).
+- `Sources/blendtool`: offline tests. `selftest` checks beat sync and CPU cost, `touch` replays finger sequences through the gesture rules, `scratch` feeds steady and back-and-forth finger motion to the engine and reports how evenly and how late the record follows, `grid` measures how tightly the drums sit on the beat grid, `pairs` counts how the library's song pairs would be mixed, `voices` measures the level and the silences of every voice clip, `automix` renders a scripted session without audio output (`--trace` prints every lane during a transition).
 
 ## Build
 

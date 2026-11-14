@@ -359,6 +359,98 @@ func automix(_ argv: [String]) {
     if let out { writeWav(out, outL, outR) }
 }
 
+func scratchtest() {
+    let sr = 44100.0, frames = Int(40 * sr)
+    let t = be_track_create(1, Int64(frames))!
+    let p = be_track_stem(t, 0)!
+    for i in 0..<frames {
+        let v = Int16(sin(Double(i) * 2 * .pi * 440 / sr) * 12000)
+        p[2 * i] = v
+        p[2 * i + 1] = v
+    }
+    func run(_ name: String, speed: Double, hz: Double, jitter: Double) {
+        let e = Engine()
+        e.load(0, t)
+        e.play(0, trackBeat: 16)
+        var rates: [Double] = [], level: [Float] = [], next = 0.5, last = 0.5, flip = false, sent = 0.0
+        var began = false, moved = 0.0, startBeat = 0.0
+        let out = renderMono(e, seconds: 2.6) { time in
+            if time >= 0.5, !began {
+                began = true
+                e.scratchBegin(0)
+                startBeat = e.state.deck.0.beat
+            }
+            while began, time >= next, next < 2.0 {
+                let dt = next - last
+                if dt > 0 {
+                    e.scratchMove(0, frames: speed * dt * sr, seconds: dt)
+                    sent += speed * dt * sr
+                }
+                last = next
+                flip.toggle()
+                next += (1 + (flip ? jitter : -jitter)) / hz
+            }
+            if time > 0.9, time < 1.9 { rates.append(e.state.deck.0.rate) }
+            if time > 2.3, moved == 0 { moved = (e.state.deck.0.beat - startBeat) * sr * 0.5 }
+        }
+        for k in stride(from: Int(0.9 * sr), to: Int(1.9 * sr), by: 512) {
+            var acc: Float = 0
+            for i in k..<(k + 512) { acc += out[i] * out[i] }
+            level.append((acc / 512).squareRoot())
+        }
+        let mean = rates.reduce(0, +) / Double(max(1, rates.count))
+        let dev = (rates.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(max(1, rates.count))).squareRoot()
+        let lv = level.reduce(0, +) / Float(max(1, level.count))
+        var tail: Float = 0
+        for i in Int(2.4 * sr)..<Int(2.55 * sr) { tail = max(tail, abs(out[i])) }
+        print(String(format: "%@: rate mean %.3f (asked %.3f), ripple %.1f%% (min %.3f max %.3f), level %.3f, travel %.0f of %.0f frames, level after the finger stops %.4f",
+                     name as NSString, mean, speed, 100 * dev / max(0.001, abs(mean)), rates.min() ?? 0, rates.max() ?? 0, lv, moved, sent, tail))
+    }
+    func wave(_ name: String, strokes: Double, reach: Double) {
+        let e = Engine()
+        e.load(0, t)
+        e.play(0, trackBeat: 16)
+        var began = false, next = 0.5, last = 0.5, flip = false
+        var heard: [(time: Double, rate: Double)] = []
+        func finger(_ time: Double) -> Double { reach * sr * sin(2 * .pi * strokes * (time - 0.5)) }
+        _ = renderMono(e, seconds: 2.2) { time in
+            if time >= 0.5, !began {
+                began = true
+                e.scratchBegin(0)
+            }
+            if time >= 0.45, time < 0.56, !began || heard.isEmpty { }
+            while began, time >= next, next < 2.0 {
+                if next > last { e.scratchMove(0, frames: finger(next) - finger(last), seconds: next - last) }
+                last = next
+                flip.toggle()
+                next += (1 + (flip ? 0.2 : -0.2)) / 60
+            }
+            if time > 0.8, time < 1.9 { heard.append((time, e.state.deck.0.rate)) }
+        }
+        var best = (lag: 0.0, error: Double.infinity)
+        for step in 0...40 {
+            let lag = Double(step) * 0.002
+            var acc = 0.0
+            for h in heard {
+                let want = reach * 2 * .pi * strokes * cos(2 * .pi * strokes * (h.time - lag - 0.5))
+                acc += (h.rate - want) * (h.rate - want)
+            }
+            let error = (acc / Double(heard.count)).squareRoot()
+            if error < best.error { best = (lag, error) }
+        }
+        let peak = reach * 2 * .pi * strokes
+        print(String(format: "%@: record follows the finger %.0f ms behind, speed error %.1f%% of the peak speed (%.2fx)", name as NSString, best.lag * 1000, 100 * best.error / peak, peak))
+    }
+    wave("baby scratch, 4 strokes a second", strokes: 2, reach: 0.07)
+    wave("fast scribble, 12 strokes a second", strokes: 6, reach: 0.03)
+    run("finger resting on the record ", speed: 0, hz: 60, jitter: 0)
+    run("steady 1.0x at 60 Hz        ", speed: 1.0, hz: 60, jitter: 0)
+    run("steady 1.0x, uneven events  ", speed: 1.0, hz: 60, jitter: 0.35)
+    run("slow drag 0.25x             ", speed: 0.25, hz: 60, jitter: 0.2)
+    run("backwards 1.5x              ", speed: -1.5, hz: 60, jitter: 0.2)
+    run("fast 4x at 90 Hz            ", speed: 4.0, hz: 90, jitter: 0.2)
+}
+
 func voices() {
     let list = Speeches.scan()
     for s in list {
@@ -560,7 +652,7 @@ func touchtest() {
         let b = TouchBoard(), s = Seen()
         b.onScratchBegin = { s.begins.append($0) }
         b.onScratchEnd = { s.ends.append($0) }
-        b.onScratchMove = { d, f in s.frames[d] += abs(f) }
+        b.onScratchMove = { d, f, _ in s.frames[d] += abs(f) }
         b.onFilter = { d, v in s.filter[d] = v }
         b.onFade = { s.fade += $0 }
         b.onFadeEnd = { s.fadeEnds += 1 }
@@ -685,7 +777,8 @@ case "grid": analyze(Array(args.dropFirst(2)), grid: true)
 case "library": analyze(Library.scan().map(\.folder.path))
 case "pairs": pairs()
 case "voices": voices()
+case "scratch": scratchtest()
 case "touch": touchtest()
 case "twin": twin(Array(args.dropFirst(2)))
-default: print("usage: blendtool selftest | touch | pairs | voices | analyze <folder or file>... | grid <folder>... [--raw] | library | automix <folders> [--at <s> <move>] [--trace]")
+default: print("usage: blendtool selftest | touch | scratch | pairs | voices | analyze <folder or file>... | grid <folder>... [--raw] | library | automix <folders> [--at <s> <move>] [--trace]")
 }

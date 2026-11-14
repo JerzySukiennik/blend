@@ -52,11 +52,11 @@ final class TrackpadView: NSView {
             self?.scratchTravel = 0
             session.scratchBegin(deck)
         }
-        board.onScratchMove = { [weak self] deck, frames in
-            session.scratchMove(deck, frames: frames)
+        board.onScratchMove = { [weak self] deck, frames, seconds in
+            session.scratchMove(deck, frames: frames, seconds: seconds)
             guard let self else { return }
             self.scratchTravel += abs(frames)
-            if model.tutorial == 1, self.scratchTravel > 30000 { model.advanceTutorial(from: 1) }
+            if model.tutorial == 1, self.scratchTravel > 20000 { model.advanceTutorial(from: 1) }
         }
         board.onScratchEnd = { deck in session.scratchEnd(deck) }
         board.onFilter = { deck, value in
@@ -94,6 +94,7 @@ final class TrackpadView: NSView {
             if touch.deviceSize.height > 0 {
                 board.width = Double(touch.deviceSize.width)
                 board.height = Double(touch.deviceSize.height)
+                board.perCm = 72 / 2.54
             }
             return TouchPoint(id: key(touch), x: Double(p.x), y: Double(p.y), resting: touch.isResting)
         }

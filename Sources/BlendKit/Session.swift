@@ -458,8 +458,8 @@ public final class Session {
         engine.scratchBegin(deck)
     }
 
-    public func scratchMove(_ deck: Int, frames: Double) {
-        if scratching[deck] { engine.scratchMove(deck, frames: frames) }
+    public func scratchMove(_ deck: Int, frames: Double, seconds: Double) {
+        if scratching[deck] { engine.scratchMove(deck, frames: frames, seconds: seconds) }
     }
 
     public func scratchEnd(_ deck: Int) {

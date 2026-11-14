@@ -117,7 +117,7 @@ void be_play(be_engine *e, int32_t deck, double trackBeat);
 void be_stop(be_engine *e, int32_t deck);
 void be_cue(be_engine *e, int32_t deck, double trackBeat);
 void be_scratch_begin(be_engine *e, int32_t deck);
-void be_scratch_move(be_engine *e, int32_t deck, double deltaFrames);
+void be_scratch_move(be_engine *e, int32_t deck, double deltaFrames, double seconds);
 void be_scratch_end(be_engine *e, int32_t deck);
 void be_sync_phase(be_engine *e, int32_t deck);
 void be_reset(be_engine *e);

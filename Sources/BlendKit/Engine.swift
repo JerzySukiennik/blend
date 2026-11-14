@@ -43,7 +43,7 @@ public final class Engine {
     public func set(_ deck: Int, _ param: Int32, _ value: Float) { be_set_param(raw, Int32(deck), param, value) }
     public func setTempo(_ bpm: Double) { be_set_tempo(raw, bpm) }
     public func scratchBegin(_ deck: Int) { be_scratch_begin(raw, Int32(deck)) }
-    public func scratchMove(_ deck: Int, frames: Double) { be_scratch_move(raw, Int32(deck), frames) }
+    public func scratchMove(_ deck: Int, frames: Double, seconds: Double) { be_scratch_move(raw, Int32(deck), frames, seconds) }
     public func scratchEnd(_ deck: Int) { be_scratch_end(raw, Int32(deck)) }
     public func syncPhase(_ deck: Int) { be_sync_phase(raw, Int32(deck)) }
     public func reset() { be_reset(raw) }

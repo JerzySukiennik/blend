@@ -28,15 +28,19 @@ public final class TouchBoard {
         var start: (x: Double, y: Double)
         var last: (x: Double, y: Double)
         var began: Double
+        var stamp = 0.0
         var moved = 0.0
         var active: Bool
         var passenger = false
     }
 
+    public static let secondsPerCm = 0.055
+
     public var width = 160.0
     public var height = 100.0
+    public var perCm = 10.0
     public var onScratchBegin: (Int) -> Void = { _ in }
-    public var onScratchMove: (Int, Double) -> Void = { _, _ in }
+    public var onScratchMove: (Int, Double, Double) -> Void = { _, _, _ in }
     public var onScratchEnd: (Int) -> Void = { _ in }
     public var onFilter: (Int, Float) -> Void = { _, _ in }
     public var onFilterRelease: () -> Void = {}
@@ -198,8 +202,9 @@ public final class TouchBoard {
                         let cx = width * (deck == 0 ? 0.25 : 0.75), cy = height * Self.strip + discH / 2
                         let ax = f.last.x * width - cx, ay = f.last.y * height - cy
                         let bx = t.x * width - cx, by = t.y * height - cy
-                        let angle = min(hypot(ax, ay), hypot(bx, by)) < discH * 0.14 ? -dx / (discH * 0.3) : atan2(ax * by - ay * bx, ax * bx + ay * by)
-                        onScratchMove(deck, -angle / (2 * .pi) * 1.8 * 44100)
+                        let ra = hypot(ax, ay), rb = hypot(bx, by)
+                        let arc = min(ra, rb) < discH * 0.14 ? dx : -atan2(ax * by - ay * bx, ax * bx + ay * by) * (ra + rb) / 2
+                        onScratchMove(deck, arc / perCm * Self.secondsPerCm * 44100, f.stamp > 0 ? time - f.stamp : 0)
                     }
                 }
             case .fader:
@@ -208,6 +213,7 @@ public final class TouchBoard {
                 break
             }
             f.last = (t.x, t.y)
+            f.stamp = time
             fingers[t.id] = f
         }
         engageFilters()
