@@ -39,7 +39,9 @@ enum {
     BE_EV_ROLL = 8,
     BE_EV_UNROLL = 9,
     BE_EV_PITCH = 10,
-    BE_EV_SPIN = 11
+    BE_EV_SPIN = 11,
+    BE_EV_VOICE = 12,
+    BE_EV_VOICE_STOP = 13
 };
 
 enum { BE_CURVE_LINEAR = 0, BE_CURVE_SMOOTH = 1, BE_CURVE_EASE_IN = 2, BE_CURVE_EASE_OUT = 3 };
@@ -87,6 +89,8 @@ typedef struct {
     float peak;
     float load;
     int32_t masterFx;
+    int32_t voicePlaying;
+    double voiceFrame;
     be_deck_state deck[BE_DECKS];
 } be_state;
 
@@ -118,6 +122,7 @@ void be_scratch_end(be_engine *e, int32_t deck);
 void be_sync_phase(be_engine *e, int32_t deck);
 void be_reset(be_engine *e);
 void be_set_master_fx(be_engine *e, int32_t preset);
+void be_voice_load(be_engine *e, be_track *clip);
 
 typedef struct {
     double bpm;

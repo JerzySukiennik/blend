@@ -226,6 +226,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     session.cycleStyle()
                 } else if key == "f" {
                     session.cycleEffect()
+                } else if key == "voices" {
+                    self.model.showVoices = true
                 } else if key == "styles" {
                     self.bar.showStyles()
                 } else if let move = Move.allCases.first(where: { $0.key.lowercased() == key }) {
@@ -301,10 +303,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 model.selected = max(0, model.selected - 1)
                 return true
             case 125:
-                model.selected = min(max(0, model.filtered.count - 1), model.selected + 1)
+                model.selected = min(max(0, (model.showVoices ? model.voices.count : model.filtered.count) - 1), model.selected + 1)
                 return true
             case 36, 76:
-                model.enqueueSelected()
+                if model.showVoices {
+                    model.speakSelected()
+                } else {
+                    model.enqueueSelected()
+                }
                 return true
             default:
                 return false
@@ -335,6 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "k": session.perform(.brake)
         case "x": session.perform(.spin)
         case "n": session.perform(.quick)
+        case "t": session.perform(.voice)
         case "f": session.cycleEffect()
         case "r": session.rollBegin()
         case "m": session.cycleStyle(e.modifierFlags.contains(.shift) ? -1 : 1)

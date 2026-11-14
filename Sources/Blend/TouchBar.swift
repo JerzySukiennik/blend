@@ -1,4 +1,4 @@
-// Blend app: the Touch Bar. Quick switch, output effects, mix style picker, hold-to-roll and a beat counter, built from plain AppKit controls.
+// Blend app: the Touch Bar. Quick switch, output effects, mix style picker, hold-to-roll, a voice drop and a beat counter, built from plain AppKit controls.
 import AppKit
 import BlendEngine
 import BlendKit
@@ -9,6 +9,7 @@ extension NSTouchBarItem.Identifier {
     static let blendStyle = NSTouchBarItem.Identifier("fun.gzowo.blend.style")
     static let blendStyleList = NSTouchBarItem.Identifier("fun.gzowo.blend.styleList")
     static let blendRoll = NSTouchBarItem.Identifier("fun.gzowo.blend.roll")
+    static let blendVoice = NSTouchBarItem.Identifier("fun.gzowo.blend.voice")
     static let blendBeat = NSTouchBarItem.Identifier("fun.gzowo.blend.beat")
 }
 
@@ -28,7 +29,7 @@ final class HoldView: NSView {
 
     required init?(coder: NSCoder) { nil }
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 62, height: 30) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 58, height: 30) }
 
     override func draw(_ dirtyRect: NSRect) {
         let box = NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6)
@@ -88,8 +89,10 @@ final class ConsoleBar: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSSc
     private var styleItem: NSPopoverTouchBarItem?
     private var styleList: NSScrubber?
     private var roll: HoldView?
+    private var voice: NSButton?
     private var beat: BeatView?
     private var shownSwitch = ""
+    private var shownVoice: Bool?
     private var shownStyle = ""
     private let styles: [Technique?] = [nil] + Technique.allCases.map { $0 }
 
@@ -102,7 +105,7 @@ final class ConsoleBar: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSSc
     func make() -> NSTouchBar {
         let bar = NSTouchBar()
         bar.delegate = self
-        bar.defaultItemIdentifiers = [.blendSwitch, .fixedSpaceSmall, .blendEffects, .fixedSpaceSmall, .blendStyle, .blendRoll, .flexibleSpace, .blendBeat]
+        bar.defaultItemIdentifiers = [.blendSwitch, .fixedSpaceSmall, .blendEffects, .fixedSpaceSmall, .blendStyle, .blendRoll, .blendVoice, .flexibleSpace, .blendBeat]
         return bar
     }
 
@@ -152,7 +155,7 @@ final class ConsoleBar: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSSc
             return item
         case .blendRoll:
             let item = NSCustomTouchBarItem(identifier: identifier)
-            let view = HoldView(frame: NSRect(x: 0, y: 0, width: 62, height: 30))
+            let view = HoldView(frame: NSRect(x: 0, y: 0, width: 58, height: 30))
             view.onDown = { [weak self] in
                 self?.model.session.rollBegin()
                 self?.model.wake()
@@ -163,6 +166,15 @@ final class ConsoleBar: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSSc
             }
             item.view = view
             roll = view
+            return item
+        case .blendVoice:
+            let item = NSCustomTouchBarItem(identifier: identifier)
+            let button = NSButton(title: "VOICE", target: self, action: #selector(speak))
+            button.widthAnchor.constraint(equalToConstant: 58).isActive = true
+            item.view = button
+            voice = button
+            shownVoice = nil
+            refresh()
             return item
         case .blendBeat:
             let item = NSCustomTouchBarItem(identifier: identifier)
@@ -198,6 +210,12 @@ final class ConsoleBar: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSSc
         refresh()
     }
 
+    @objc private func speak() {
+        model.session.perform(.voice)
+        model.wake()
+        refresh()
+    }
+
     @objc private func pickEffect(_ sender: NSSegmentedControl) {
         let index = sender.selectedSegment
         guard Effect.allCases.indices.contains(index) else { return }
@@ -215,7 +233,7 @@ final class ConsoleBar: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSSc
         root.cacheDisplay(in: root.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
         var parts: [String] = []
-        for view in [switchButton as NSView?, effects, roll, beat] {
+        for view in [switchButton as NSView?, effects, roll, voice, beat] {
             if let view { parts.append("\(Int(view.convert(view.bounds, to: nil).minX))-\(Int(view.convert(view.bounds, to: nil).maxX))") }
         }
         return "touch bar \(Int(root.bounds.width))x\(Int(root.bounds.height)) pt, items at " + parts.joined(separator: ", ")
@@ -245,6 +263,12 @@ final class ConsoleBar: NSObject, NSTouchBarDelegate, NSScrubberDataSource, NSSc
             styleList?.selectedIndex = styles.firstIndex { $0 == s.style } ?? 0
         }
         roll?.lit = s.rolling
+        let speaking = s.speaking != nil
+        if speaking != shownVoice, let button = voice {
+            shownVoice = speaking
+            button.attributedTitle = NSAttributedString(string: "VOICE", attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: speaking ? NSColor.black : NSColor.white])
+            button.bezelColor = speaking ? NSColor(white: 0.94, alpha: 1) : nil
+        }
         beat?.beat = s.beatInBar
         var note = ""
         if s.transition == nil, let bars = s.countdownBars { note = "\(bars)" }

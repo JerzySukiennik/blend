@@ -46,6 +46,8 @@ public final class Session {
     public private(set) var upcoming: Technique?
     public private(set) var style: Technique?
     public private(set) var effect: Effect?
+    public private(set) var speeches: [Speech] = []
+    public private(set) var speaking: Speech?
     public private(set) var beatInBar = -1
     public var autoMix = true
 
@@ -56,6 +58,13 @@ public final class Session {
         }
     }
     @ObservationIgnored public var log: ((String) -> Void)?
+    @ObservationIgnored public var voiceGain = 1.3
+    @ObservationIgnored public var voiceLoader: (Speech, @escaping (OpaquePointer?) -> Void) -> Void = { speech, done in
+        DispatchQueue.global(qos: .userInitiated).async {
+            let clip = Speeches.load(speech)
+            DispatchQueue.main.async { done(clip) }
+        }
+    }
     @ObservationIgnored private var unloadAt: [Double?] = [nil, nil]
     @ObservationIgnored private var scratching = [false, false]
     @ObservationIgnored private var tagCounter = 100
@@ -71,6 +80,10 @@ public final class Session {
     @ObservationIgnored private var used: [Technique: Int] = [:]
     @ObservationIgnored private var useCount = 0
     @ObservationIgnored private var bridgeRun = 0
+    @ObservationIgnored private var voiceBag: [Speech] = []
+    @ObservationIgnored private var voiceFrom = 0.0
+    @ObservationIgnored private var voiceHeard = false
+    @ObservationIgnored private var voiceTag = 0
     @ObservationIgnored private var rollDeck: Int?
     @ObservationIgnored private var rollTag = 0
     @ObservationIgnored private var rollLen = 0.5
@@ -179,6 +192,91 @@ public final class Session {
         plan = nil
         planEpoch += 1
         say(style.map { "\($0.label): \($0.help)" } ?? "AUTO: Blend picks the mix style")
+    }
+
+    public func reloadSpeeches() { speeches = Speeches.scan() }
+
+    private func voiceMarks(_ s: be_state) -> (big: [Double], small: [Double]) {
+        guard let c = current, let a = decks[c].track else { return ([], []) }
+        let sa = a.structure, da = s.deck(c)
+        var big: [Double] = [], small: [Double] = []
+        if let tr = transition ?? plan {
+            var share = 1.0
+            if tr.style == .blend {
+                share = 0.5
+                if tr.technique == .ride || tr.technique == .bridge { share = 0.75 }
+                if tr.technique == .loop || tr.technique == .chop { share = 1 }
+            }
+            big.append(tr.startBeat + share * tr.length)
+        }
+        let here = sa.bar(atBeat: da.beat)
+        if let drop = sa.drops.first(where: { $0 > here }) { big.append(sa.beat(ofBar: drop) - da.offset) }
+        var bar = here + 1
+        while small.count < 10, bar < sa.bars {
+            if sa.isPhrase(bar, every: 4) { small.append(sa.beat(ofBar: bar) - da.offset) }
+            bar += 1
+        }
+        return (big.filter { $0 > s.masterBeat }.sorted(), small.filter { $0 > s.masterBeat })
+    }
+
+    public func speak(_ wanted: Speech? = nil) {
+        if let old = speaking {
+            engine.cancel(tag: voiceTag)
+            engine.event(Int32(BE_EV_VOICE_STOP), deck: -1, at: .nan)
+            speaking = nil
+            if wanted == nil || wanted?.id == old.id { return }
+        }
+        if voiceBag.isEmpty {
+            reloadSpeeches()
+            voiceBag = speeches.shuffled()
+        }
+        guard !speeches.isEmpty else {
+            say("No voices found in Music/Blend/Speeches")
+            return
+        }
+        let pool = wanted.map { [$0] } ?? voiceBag
+        let s = engine.state, now = s.masterBeat, bps = max(0.5, s.masterBpm / 60)
+        var pick = pool[0], start = Double.nan, landing = ""
+        if let c = current, !paused {
+            let marks = voiceMarks(s)
+            var best = Double.infinity
+            for (list, reach, cost) in [(marks.big, 16.0, 0.0), (marks.small, 8.0, 8.0)] {
+                for mark in list {
+                    for clip in pool {
+                        let wait = mark - clip.hit * bps - now
+                        guard wait >= 0.75, wait <= reach, wait + cost < best else { continue }
+                        best = wait + cost
+                        pick = clip
+                        start = now + wait
+                        landing = String(format: ", lands on beat %.1f", mark)
+                    }
+                }
+            }
+            if start.isNaN {
+                let d = s.deck(c)
+                start = (d.beat + 0.5).rounded(.up) - d.offset
+            }
+        }
+        voiceBag.removeAll { $0.id == pick.id }
+        speaking = pick
+        voiceHeard = false
+        voiceFrom = start.isNaN ? now : start
+        voiceTag = nextTag()
+        let tag = voiceTag, gain = voiceGain
+        let bars = Int(((voiceFrom - now) / 4).rounded())
+        say(pick.speaker + " · " + pick.title + (bars >= 2 ? " · in \(bars) bars" : ""))
+        log?(String(format: "voice %@ (%.1f s) starts at beat %.2f%@", pick.id as NSString, pick.seconds, voiceFrom, landing as NSString))
+        let engine = self.engine
+        voiceLoader(pick) { [weak self] clip in
+            guard let self, self.speaking?.id == pick.id, self.voiceTag == tag, let clip else {
+                if let clip { be_track_release(clip) }
+                if let self, self.speaking?.id == pick.id, self.voiceTag == tag { self.speaking = nil }
+                return
+            }
+            engine.loadVoice(clip)
+            be_track_release(clip)
+            engine.event(Int32(BE_EV_VOICE), deck: -1, at: start, value: gain, tag: tag)
+        }
     }
 
     public func setEffect(_ new: Effect?) {
@@ -363,6 +461,7 @@ public final class Session {
         case .loop: toggleLoop()
         case .roll: rollBegin(hold: false)
         case .quick: quickSwitch()
+        case .voice: speak()
         }
     }
 
@@ -1063,6 +1162,13 @@ public final class Session {
             pulse = ((Int(floor(s.deck(c).beat)) - t.structure.barPhase) % 4 + 4) % 4
         }
         if pulse != beatInBar { beatInBar = pulse }
+        if speaking != nil {
+            if s.voicePlaying != 0 {
+                voiceHeard = true
+            } else if voiceHeard || beat > voiceFrom + 12 {
+                speaking = nil
+            }
+        }
         if let tr = transition {
             let p = tr.progress(atBeat: beat)
             if mixProgress == nil || abs(p - (mixProgress ?? 0)) > 0.012 || (p >= 1 && mixProgress != 1) { mixProgress = p }

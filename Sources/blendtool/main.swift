@@ -260,6 +260,8 @@ func automix(_ argv: [String]) {
     }
     let session = Session()
     session.loader = { info, done in done(Result { try LoadedTrack.load(info) }) }
+    session.voiceLoader = { speech, done in done(Speeches.load(speech)) }
+    session.reloadSpeeches()
     var clock = 0.0
     session.log = { print(String(format: "[%7.2fs beat %8.2f] ", clock, session.engine.state.masterBeat) + $0) }
     for p in paths {
@@ -288,6 +290,10 @@ func automix(_ argv: [String]) {
                 session.toggleStem(Int(parts[1])!, Stem(rawValue: Int(parts[2])!)!)
             } else if cmd.hasPrefix("style:") {
                 session.setStyle(Technique(rawValue: String(cmd.dropFirst(6))))
+            } else if cmd.hasPrefix("voice:") {
+                session.speak(session.speeches.first { $0.id == String(cmd.dropFirst(6)) })
+            } else if cmd.hasPrefix("voicegain:") {
+                session.voiceGain = Double(cmd.dropFirst(10)) ?? 1.3
             } else if cmd.hasPrefix("fx:") {
                 session.setEffect(Effect.allCases.first { $0.label.lowercased() == String(cmd.dropFirst(3)) })
             } else if cmd == "roll:on" {
@@ -344,6 +350,34 @@ func automix(_ argv: [String]) {
     print(String(format: "done: peak %.3f load %.3f bpm %.2f current deck %@ queue %d", peak, s.load, s.masterBpm, String(describing: session.current), session.queue.count))
     print("rms per second:", rms.map { String(format: "%.2f", $0) }.joined(separator: " "))
     if let out { writeWav(out, outL, outR) }
+}
+
+func voices() {
+    let list = Speeches.scan()
+    for s in list {
+        guard let raw = Speeches.load(s), let p = be_track_stem(raw, 0) else {
+            print(s.id, "cannot be read")
+            continue
+        }
+        let frames = Int(be_track_frames(raw)), win = 2205
+        var levels: [Float] = [], peak: Float = 0, i = 0
+        while i + win <= frames {
+            var acc: Float = 0
+            for k in i..<(i + win) {
+                let v = (Float(p[2 * k]) + Float(p[2 * k + 1])) / 65536
+                acc += v * v
+                peak = max(peak, abs(v))
+            }
+            levels.append((acc / Float(win)).squareRoot())
+            i += win
+        }
+        let loud = levels.sorted().suffix(max(1, levels.count * 6 / 10))
+        let active = (loud.reduce(0) { $0 + $1 * $1 } / Float(loud.count)).squareRoot()
+        let lead = Double(levels.firstIndex { $0 > 0.02 } ?? 0) * 0.05, tail = Double(levels.count - 1 - (levels.lastIndex { $0 > 0.02 } ?? 0)) * 0.05
+        print(String(format: "%-20@ %5.1f s  hit %5.1f  speech rms %.3f  peak %.2f  quiet lead %.2f s  tail %.2f s  %@ · %@", s.id as NSString, s.seconds, s.hit, active, peak, lead, tail, s.speaker as NSString, s.title as NSString))
+        be_track_release(raw)
+    }
+    print("\(list.count) voices in \(Speeches.root.path)")
 }
 
 func pairs() {
@@ -643,7 +677,8 @@ case "analyze": analyze(Array(args.dropFirst(2)))
 case "grid": analyze(Array(args.dropFirst(2)), grid: true)
 case "library": analyze(Library.scan().map(\.folder.path))
 case "pairs": pairs()
+case "voices": voices()
 case "touch": touchtest()
 case "twin": twin(Array(args.dropFirst(2)))
-default: print("usage: blendtool selftest | touch | pairs | analyze <folder or file>... | grid <folder>... [--raw] | library | automix <folders> [--at <s> <move>] [--trace]")
+default: print("usage: blendtool selftest | touch | pairs | voices | analyze <folder or file>... | grid <folder>... [--raw] | library | automix <folders> [--at <s> <move>] [--trace]")
 }

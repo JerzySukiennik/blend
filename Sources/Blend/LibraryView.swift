@@ -1,4 +1,4 @@
-// Blend app: the library screen (search, blend filter, song list with fit indicator, queue column, file drop).
+// Blend app: the library screen (search, blend filter, song list with fit indicator, voice list, queue column, file drop).
 import BlendKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -13,7 +13,7 @@ struct LibraryView: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass").foregroundStyle(Theme.dim)
-                    TextField("Search your library", text: $model.search)
+                    TextField(model.showVoices ? "Search voices" : "Search your library", text: $model.search)
                         .textFieldStyle(.plain)
                         .font(.system(size: 15))
                         .focused($searching)
@@ -21,7 +21,8 @@ struct LibraryView: View {
                     if let name = session.analyzing {
                         Text("Analyzing \(name)").font(.system(size: 12)).foregroundStyle(Theme.dim).lineLimit(1)
                     }
-                    FitsChip(model: model)
+                    if !model.showVoices { FitsChip(model: model) }
+                    VoicesChip(model: model)
                 }
                 .padding(.leading, 14)
                 .padding(.trailing, 6)
@@ -29,7 +30,9 @@ struct LibraryView: View {
                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.panel))
 
                 let list = model.filtered
-                if list.isEmpty {
+                if model.showVoices {
+                    VoiceList(model: model)
+                } else if list.isEmpty {
                     VStack(spacing: 8) {
                         let fitting = model.onlyFits && session.mixReference != nil
                         Text(session.library.isEmpty ? "Your library is empty" : fitting ? "Nothing here blends smoothly with \(session.mixReference?.title ?? "it")" : "Nothing matches").font(.system(size: 17, weight: .semibold))
@@ -56,7 +59,7 @@ struct LibraryView: View {
                         }
                     }
                 }
-                Text("Click a song or press return to queue it.  Tab opens the console.  The bars show how smoothly a song blends with the last one you picked.")
+                Text(model.showVoices ? "Click a voice to drop it over the music. Blend starts it so that the last word lands on the next change.  T in the console picks one for you." : "Click a song or press return to queue it.  Tab opens the console.  The bars show how smoothly a song blends with the last one you picked.")
                     .font(.system(size: 12)).foregroundStyle(Theme.faint)
             }
             QueueColumn(model: model).frame(width: 320)
@@ -113,6 +116,96 @@ struct FitsChip: View {
         .onTapGesture { if ref != nil { withAnimation(Theme.snappy) { model.toggleFits() } } }
         .help(ref == nil ? "Play or queue a song first, then show only the songs that blend smoothly with it" : "Show only songs whose tempo and key blend smoothly with the last song you picked")
         .animation(Theme.snappy, value: on)
+    }
+}
+
+struct VoicesChip: View {
+    let model: AppModel
+    @State private var hover = false
+
+    var body: some View {
+        let on = model.showVoices
+        HStack(spacing: 7) {
+            Image(systemName: "quote.bubble.fill").font(.system(size: 11, weight: .semibold))
+            Text("Voices")
+        }
+        .font(.system(size: 12.5, weight: .semibold))
+        .foregroundStyle(on ? Theme.ink : Theme.dim)
+        .padding(.horizontal, 11)
+        .frame(height: 28)
+        .fixedSize()
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(on ? Theme.text : (hover ? Theme.panelStrong : Theme.panel)))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onTapGesture { withAnimation(Theme.snappy) { model.toggleVoices() } }
+        .help("Famous lines you can drop over the mix")
+        .animation(Theme.snappy, value: on)
+    }
+}
+
+struct VoiceList: View {
+    let model: AppModel
+
+    var body: some View {
+        let list = model.voices
+        if list.isEmpty {
+            VStack(spacing: 8) {
+                Text(model.session.speeches.isEmpty ? "No voices yet" : "Nothing matches").font(.system(size: 17, weight: .semibold))
+                Text("Voice clips live in Music/Blend/Speeches.").font(.system(size: 13)).foregroundStyle(Theme.dim)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(Array(list.enumerated()), id: \.element.id) { index, speech in
+                            VoiceRow(model: model, speech: speech, selected: index == model.selected)
+                                .id(speech.id)
+                                .onTapGesture {
+                                    model.selected = index
+                                    model.speakSelected()
+                                }
+                        }
+                    }
+                }
+                .scrollIndicators(.never)
+                .onChange(of: model.selected) { _, new in
+                    if list.indices.contains(new) { proxy.scrollTo(list[new].id) }
+                }
+            }
+        }
+    }
+}
+
+struct VoiceRow: View {
+    let model: AppModel
+    let speech: Speech
+    let selected: Bool
+    @State private var hover = false
+
+    var body: some View {
+        let speaking = model.session.speaking?.id == speech.id
+        HStack(spacing: 12) {
+            Text(speech.year > 0 ? String(speech.year) : "").font(.system(size: 12.5, weight: .bold)).monospacedDigit()
+                .foregroundStyle(speaking ? Theme.ink : Theme.dim)
+                .frame(width: 44, height: 44)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(speaking ? Theme.text : Theme.panelStrong))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(speech.title).font(.system(size: 14.5, weight: .semibold)).lineLimit(1)
+                Text(speech.speaker).font(.system(size: 12.5)).foregroundStyle(Theme.dim).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Text(timeText(speech.seconds.rounded())).font(.system(size: 12.5)).monospacedDigit().foregroundStyle(Theme.dim).frame(width: 38, alignment: .trailing)
+            Image(systemName: speaking ? "stop.fill" : "play.fill").font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(speaking || hover || selected ? Theme.text : Theme.faint)
+                .frame(width: 28)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 58)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(selected ? Theme.panelStrong : (hover ? Theme.panel : Color.clear)))
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .animation(Theme.snappy, value: speaking)
     }
 }
 

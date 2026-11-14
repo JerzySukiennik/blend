@@ -167,6 +167,7 @@ public struct Structure {
                 let before = bar == 0 ? 0 : lv[0][max(0, bar - 2)..<bar].max() ?? 0
                 if before < 0.22 && (vs.last.map { bar - $0 >= 4 } ?? true) { vs.append(bar) }
             }
+            if vs.isEmpty, count > 1, let first = (0..<(count - 1)).first(where: { lv[0][$0] > 0.4 && lv[0][$0 + 1] > 0.4 }) { vs.append(first) }
         }
         vocalStarts = vs
         let strong = total.lastIndex { $0 > 0.3 } ?? max(0, count - 1)
@@ -254,13 +255,14 @@ public final class LoadedTrack {
         var warp = be_warp()
         var analysis: Analysis
         var fresh = false
-        if straightens, let cached = cachedAnalysis(info), cached.frames == frames {
+        let bends = straightens && (hint(info, "steady") ?? 0) <= 0
+        if straightens, let cached = cachedAnalysis(info), cached.frames == frames, bends || !cached.straightened {
             analysis = cached
             if cached.straightened { be_track_straighten(raw, &beats, Int32(beats.count), &downbeats, Int32(downbeats.count), 0, &warp) }
         } else {
             let hint = hint(info, "downbeat")
             if let hint { downbeats.append(hint) }
-            if straightens { be_track_straighten(raw, &beats, Int32(beats.count), &downbeats, Int32(downbeats.count), 1, &warp) }
+            if bends { be_track_straighten(raw, &beats, Int32(beats.count), &downbeats, Int32(downbeats.count), 1, &warp) }
             let marked = hint == nil ? nil : downbeats.removeLast()
             analysis = try analyze(info, raw: raw, frames: frames, beats: beats, downbeats: downbeats, marked: marked)
             analysis.straightened = warp.applied == 1

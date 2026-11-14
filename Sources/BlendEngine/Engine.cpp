@@ -23,7 +23,7 @@ constexpr int kRingMask = kRing - 1;
 constexpr int kDrums = 1;
 
 enum { MODE_SLAVED = 0, MODE_SCRATCH = 1, MODE_SPINUP = 2, MODE_BRAKE = 3, MODE_REWIND = 4 };
-enum { C_LOAD, C_SCHEDULE, C_CANCEL, C_PARAM, C_TEMPO, C_PLAY, C_STOP, C_CUE, C_SCR_BEGIN, C_SCR_MOVE, C_SCR_END, C_SYNC, C_RESET, C_FX };
+enum { C_LOAD, C_SCHEDULE, C_CANCEL, C_PARAM, C_TEMPO, C_PLAY, C_STOP, C_CUE, C_SCR_BEGIN, C_SCR_MOVE, C_SCR_END, C_SYNC, C_RESET, C_FX, C_VOICE };
 
 struct IO {
     float *ch[2];
@@ -260,6 +260,64 @@ struct OutputFx {
     }
 };
 
+struct Voice {
+    be_track *clip = nullptr;
+    bool playing = false;
+    int64_t pos = 0;
+    int closing = 0, idle = 1 << 30, w = 0;
+    float gain = 1.0f, duck = 0.0f, lp[2] = {0, 0};
+    Biquad hp;
+    std::vector<float> echo[2];
+
+    void setup(double sr) {
+        hp.set(true, 110.0, 0.707, sr);
+        for (int c = 0; c < 2; ++c) echo[c].assign(kRing, 0.0f);
+    }
+
+    float settle(int n) {
+        float target = playing && closing == 0 ? 1.0f : 0.0f;
+        float k = target > duck ? 0.0025f : 0.00009f;
+        duck = target + (duck - target) * std::pow(1.0f - k, (float)n);
+        return duck;
+    }
+
+    void render(float *L, float *R, int n, double bpm, double sr) {
+        if (!playing && idle > (int)(sr * 4.0)) return;
+        double delay = 0.75 * 60.0 / bpm * sr;
+        if (delay > kRing - 8) delay = kRing - 8;
+        int di = (int)delay;
+        const int16_t *d = clip ? clip->pcm[0].data() : nullptr;
+        for (int i = 0; i < n; ++i) {
+            float x[2] = {0, 0};
+            if (playing && d) {
+                if (pos >= clip->frames) {
+                    playing = false;
+                } else {
+                    float g = gain / 32768.0f;
+                    if (pos < 256) g *= (float)pos / 256.0f;
+                    if (closing > 0) {
+                        g *= (float)closing / 2000.0f;
+                        if (--closing == 0) playing = false;
+                    }
+                    x[0] = hp.run(d[2 * pos] * g, 0);
+                    x[1] = hp.run(d[2 * pos + 1] * g, 1);
+                    ++pos;
+                    idle = 0;
+                }
+            }
+            int r = (w - di) & kRingMask;
+            for (int c = 0; c < 2; ++c) {
+                float y = echo[c][r];
+                lp[c] += (y - lp[c]) * 0.35f;
+                echo[c][w] = x[c] * 0.3f + lp[c] * 0.45f;
+                (c == 0 ? L : R)[i] += x[c] + y;
+            }
+            w = (w + 1) & kRingMask;
+        }
+        if (!playing) idle += n;
+    }
+};
+
 struct SVF {
     float ic1 = 0, ic2 = 0;
     inline void run(float x, float g, float k, float a1, float a2, float a3, float &lp, float &hp) {
@@ -460,7 +518,7 @@ struct Deck {
         if (stretching) startStretch(pos, rate);
     }
 
-    void render(int n, double beat0, double beat1, double bpm, Scratch &w, float *outL, float *outR) {
+    void render(int n, double beat0, double beat1, double bpm, Scratch &w, float *outL, float *outR, float duck0 = 0.0f, float duck1 = 0.0f) {
         float smooth = 1.0f - std::exp(-(float)n / (0.006f * (float)sr));
         float g0[BE_P_COUNT], g1[BE_P_COUNT];
         for (int i = 0; i < BE_P_COUNT; ++i) {
@@ -476,6 +534,10 @@ struct Deck {
             const Param &q = p[BE_P_STEM0 + s], &u = p[BE_P_USER0 + s];
             sg0[s] = g0[BE_P_STEM0 + s] * g0[BE_P_USER0 + s];
             sg1[s] = g1[BE_P_STEM0 + s] * g1[BE_P_USER0 + s];
+            if (s == 0 && track->stems == BE_STEMS) {
+                sg0[s] *= 1.0f - duck0;
+                sg1[s] *= 1.0f - duck1;
+            }
             act[s] = s < track->stems && (sg0[s] > 1e-5f || sg1[s] > 1e-5f || ((q.target > 1e-5f || q.ramp) && u.target > 1e-5f));
         }
 
@@ -688,7 +750,8 @@ struct Deck {
         float e0 = g0[BE_P_ECHO], e1 = g1[BE_P_ECHO];
         bool echoing = e0 > 1e-4f || e1 > 1e-4f;
         if (echoing) echoIdle = 0;
-        float v0 = g0[BE_P_VOLUME], v1 = g1[BE_P_VOLUME];
+        float dip = track->stems == BE_STEMS ? 0.26f : 0.45f;
+        float v0 = g0[BE_P_VOLUME] * (1.0f - dip * duck0), v1 = g1[BE_P_VOLUME] * (1.0f - dip * duck1);
         if (echoIdle < (int)(sr * 8.0)) {
             double delay = 0.75 * 60.0 / bpm * sr;
             if (delay > kRing - 8) delay = kRing - 8;
@@ -731,6 +794,7 @@ struct be_engine {
     int pending = 0;
     float limiter = 1.0f, peak = 0, load = 0;
     OutputFx fx;
+    Voice voice;
     Ring<Cmd, 2048> cmds;
     Ring<be_track *, 64> retired;
     std::atomic<uint32_t> seq{0};
@@ -744,6 +808,19 @@ struct be_engine {
     }
 
     void apply(const be_event &ev) {
+        if (ev.type == BE_EV_VOICE) {
+            if (voice.clip) {
+                voice.playing = true;
+                voice.pos = 0;
+                voice.closing = 0;
+                voice.gain = ev.value > 0.01 ? (float)ev.value : 1.0f;
+            }
+            return;
+        }
+        if (ev.type == BE_EV_VOICE_STOP) {
+            if (voice.playing && voice.closing == 0) voice.closing = 2000;
+            return;
+        }
         if (ev.type == BE_EV_RAMP) {
             if (Param *q = param(ev.deck, ev.param)) q->begin(ev);
             return;
@@ -920,6 +997,12 @@ struct be_engine {
             break;
         }
         case C_FX: fx.want = c.param; break;
+        case C_VOICE:
+            voice.playing = false;
+            if (voice.clip) retired.push(voice.clip);
+            voice.clip = c.track;
+            voice.pos = 0;
+            break;
         case C_RESET:
             for (int k = 0; k < BE_DECKS; ++k) {
                 deck[k].stop();
@@ -988,7 +1071,9 @@ struct be_engine {
                 if (left < n) n = (int)left;
             }
             double beat1 = beat + n * bpf;
-            for (int k = 0; k < BE_DECKS; ++k) deck[k].render(n, beat, beat1, bpm, work, L + done, R + done);
+            float duck0 = voice.duck, duck1 = voice.settle(n);
+            for (int k = 0; k < BE_DECKS; ++k) deck[k].render(n, beat, beat1, bpm, work, L + done, R + done, duck0, duck1);
+            voice.render(L + done, R + done, n, bpm, sr);
             for (int k = 0; k < BE_DECKS; ++k) {
                 Deck &d = deck[k];
                 if (!d.reattached) continue;
@@ -1034,6 +1119,8 @@ struct be_engine {
         s.peak = peak;
         s.load = load;
         s.masterFx = fx.want;
+        s.voicePlaying = voice.playing;
+        s.voiceFrame = (double)voice.pos;
         for (int k = 0; k < BE_DECKS; ++k) {
             Deck &d = deck[k];
             be_deck_state &o = s.deck[k];
@@ -1065,6 +1152,7 @@ be_engine *be_create(double sampleRate) {
     for (int i = 0; i < kMaxEvents; ++i) e->used[i] = false;
     e->tempo.set(120.0f);
     e->fx.setup(sampleRate);
+    e->voice.setup(sampleRate);
     mach_timebase_info(&e->timebase);
     e->publish();
     return e;
@@ -1076,6 +1164,7 @@ void be_destroy(be_engine *e) {
     for (int k = 0; k < BE_DECKS; ++k) {
         if (e->deck[k].track) be_track_release(e->deck[k].track);
     }
+    if (e->voice.clip) be_track_release(e->voice.clip);
     delete e;
 }
 
@@ -1132,5 +1221,14 @@ void be_scratch_end(be_engine *e, int32_t deck) { post(e, C_SCR_END, deck, 0, 0)
 void be_sync_phase(be_engine *e, int32_t deck) { post(e, C_SYNC, deck, 0, 0); }
 void be_reset(be_engine *e) { post(e, C_RESET, -1, 0, 0); }
 void be_set_master_fx(be_engine *e, int32_t preset) { post(e, C_FX, -1, preset, 0); }
+
+void be_voice_load(be_engine *e, be_track *clip) {
+    if (clip) clip->refs.fetch_add(1);
+    Cmd c;
+    c.type = C_VOICE;
+    c.deck = -1;
+    c.track = clip;
+    e->cmds.push(c);
+}
 
 }

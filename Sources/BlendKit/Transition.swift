@@ -3,7 +3,7 @@ import BlendEngine
 import Foundation
 
 public enum Move: String, CaseIterable, Identifiable {
-    case mix, vocal, beat, build, drop, loop, roll, echo, brake, spin, quick
+    case mix, vocal, beat, build, drop, loop, roll, echo, brake, spin, quick, voice
 
     public var id: String { rawValue }
     public var label: String { self == .quick ? "SWITCH" : rawValue.uppercased() }
@@ -20,6 +20,7 @@ public enum Move: String, CaseIterable, Identifiable {
         case .brake: return "K"
         case .spin: return "X"
         case .quick: return "N"
+        case .voice: return "T"
         }
     }
     public var help: String {
@@ -35,6 +36,7 @@ public enum Move: String, CaseIterable, Identifiable {
         case .brake: return "Vinyl brake into the next song"
         case .spin: return "Spin the record back into the next song"
         case .quick: return "Switch to the next song at the next good moment"
+        case .voice: return "Drop a famous voice over the mix, timed to end on the next change"
         }
     }
 }

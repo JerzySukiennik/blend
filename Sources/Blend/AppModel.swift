@@ -21,6 +21,7 @@ final class AppModel {
     var search = ""
     var selected = 0
     var onlyFits = false
+    var showVoices = false
     var dropTargeted = false
 
     @ObservationIgnored var audio: AudioOutput?
@@ -44,13 +45,32 @@ final class AppModel {
         return list
     }
 
+    var voices: [Speech] {
+        func plain(_ s: String) -> String { s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).filter { $0.isLetter || $0.isNumber || $0 == " " } }
+        let q = plain(search.trimmingCharacters(in: .whitespaces))
+        return q.isEmpty ? session.speeches : session.speeches.filter { plain($0.title).contains(q) || plain($0.speaker).contains(q) || "\($0.year)".contains(q) }
+    }
+
     func toggleFits() {
         onlyFits.toggle()
         selected = 0
     }
 
+    func toggleVoices() {
+        showVoices.toggle()
+        selected = 0
+    }
+
+    func speakSelected() {
+        let list = voices
+        guard list.indices.contains(selected) else { return }
+        session.speak(list[selected])
+        wake()
+    }
+
     func start(silent: Bool = false) {
         session.reloadLibrary()
+        session.reloadSpeeches()
         session.analyzeMissing()
         if silent { return }
         audio = AudioOutput(engine: session.engine)
@@ -62,6 +82,7 @@ final class AppModel {
         withAnimation(Theme.spring) { mode = new }
         if new == .library {
             session.reloadLibrary()
+            session.reloadSpeeches()
             session.analyzeMissing()
         }
         onModeChange?(new)
@@ -87,7 +108,7 @@ final class AppModel {
 
     var needsFrames: Bool {
         let s = session.engine.state
-        if s.deck.0.playing != 0 || s.deck.1.playing != 0 { return true }
+        if s.deck.0.playing != 0 || s.deck.1.playing != 0 || s.voicePlaying != 0 || session.speaking != nil { return true }
         return Date().timeIntervalSince(lastActivity) < 2.5
     }
 

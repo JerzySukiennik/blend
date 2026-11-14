@@ -193,7 +193,7 @@ struct MovesRow: View {
     var body: some View {
         let s = model.session
         HStack(spacing: u * 0.7) {
-            ForEach([Move.vocal, .beat, .build, .drop, .loop, .roll, .echo, .brake, .spin]) { move in
+            ForEach([Move.vocal, .beat, .build, .drop, .loop, .roll, .echo, .brake, .spin, .voice]) { move in
                 MovePill(move: move, active: isActive(move, s), pulse: s.flash == move ? s.flashCount : 0)
             }
         }
@@ -209,6 +209,7 @@ struct MovesRow: View {
         case .build: return s.transition?.label == "BUILD"
         case .echo: return s.transition?.label == "ECHO"
         case .brake: return s.transition?.label == "BRAKE"
+        case .voice: return s.speaking != nil
         default: return false
         }
     }
