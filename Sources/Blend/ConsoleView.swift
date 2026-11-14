@@ -1,4 +1,4 @@
-// Blend app: the console screen (two platters, countdown, mix style, dual waveform strip, move pills).
+// Blend app: the console screen (two platters, countdown, mix style and output effect, dual waveform strip, move pills).
 import BlendKit
 import SwiftUI
 
@@ -151,6 +151,13 @@ struct CenterColumn: View {
                     Text("M").font(.system(size: u * 0.72, weight: .semibold)).foregroundStyle(Theme.faint)
                 }
                 .animation(Theme.snappy, value: styleText(s))
+                HStack(spacing: u * 0.5) {
+                    Text("EFFECT").font(.system(size: u * 0.76, weight: .bold)).tracking(u * 0.08).foregroundStyle(Theme.faint)
+                    Text(s.effect?.label ?? "OFF").font(.system(size: u * 0.76, weight: .bold)).tracking(u * 0.08)
+                        .foregroundStyle(s.effect == nil ? Theme.dim : Theme.text)
+                    Text("F").font(.system(size: u * 0.72, weight: .semibold)).foregroundStyle(Theme.faint)
+                }
+                .animation(Theme.snappy, value: s.effect)
             }
             .foregroundStyle(Theme.dim)
         }
@@ -199,9 +206,9 @@ struct MovesRow: View {
         case .loop: return s.looping
         case .roll: return s.rolling
         case .spin: return s.transition?.style == .spin
-        case .build: return s.transition?.style == .build
-        case .echo: return s.transition?.style == .echo
-        case .brake: return s.transition?.style == .brake
+        case .build: return s.transition?.label == "BUILD"
+        case .echo: return s.transition?.label == "ECHO"
+        case .brake: return s.transition?.label == "BRAKE"
         default: return false
         }
     }

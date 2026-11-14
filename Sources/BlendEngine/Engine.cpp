@@ -1,4 +1,4 @@
-// Blend engine: two stem decks slaved to a master beat clock, per-stem time-stretch, scratch, loops, FX and beat-scheduled automation.
+// Blend engine: two stem decks slaved to a master beat clock, per-stem time-stretch, scratch, loops, FX, beat-scheduled automation and output effects (radio, behind glass, hall, lo-fi).
 #include "blend_engine.h"
 #include "Track.h"
 #include "signalsmith-stretch.h"
@@ -23,7 +23,7 @@ constexpr int kRingMask = kRing - 1;
 constexpr int kDrums = 1;
 
 enum { MODE_SLAVED = 0, MODE_SCRATCH = 1, MODE_SPINUP = 2, MODE_BRAKE = 3, MODE_REWIND = 4 };
-enum { C_LOAD, C_SCHEDULE, C_CANCEL, C_PARAM, C_TEMPO, C_PLAY, C_STOP, C_CUE, C_SCR_BEGIN, C_SCR_MOVE, C_SCR_END, C_SYNC, C_RESET };
+enum { C_LOAD, C_SCHEDULE, C_CANCEL, C_PARAM, C_TEMPO, C_PLAY, C_STOP, C_CUE, C_SCR_BEGIN, C_SCR_MOVE, C_SCR_END, C_SYNC, C_RESET, C_FX };
 
 struct IO {
     float *ch[2];
@@ -110,6 +110,153 @@ struct Param {
             if (std::fabs(target - cur) < 1e-5f) cur = target;
         }
         return cur;
+    }
+};
+
+struct Biquad {
+    float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
+    float z1[2] = {0, 0}, z2[2] = {0, 0};
+    void set(bool high, double fc, double q, double sr) {
+        double w = 2.0 * 3.14159265358979 * fc / sr, c = std::cos(w), alpha = std::sin(w) / (2.0 * q), a0 = 1.0 + alpha;
+        double edge = high ? (1.0 + c) * 0.5 : (1.0 - c) * 0.5;
+        b0 = (float)(edge / a0);
+        b1 = (float)((high ? -(1.0 + c) : 1.0 - c) / a0);
+        b2 = b0;
+        a1 = (float)(-2.0 * c / a0);
+        a2 = (float)((1.0 - alpha) / a0);
+    }
+    void clear() { z1[0] = z1[1] = z2[0] = z2[1] = 0; }
+    inline float run(float x, int ch) {
+        float y = b0 * x + z1[ch];
+        z1[ch] = b1 * x - a1 * y + z2[ch];
+        z2[ch] = b2 * x - a2 * y;
+        return y;
+    }
+};
+
+struct Hall {
+    static constexpr int kCombs = 8, kPasses = 4;
+    std::vector<float> comb[2][kCombs], pass[2][kPasses];
+    int ci[2][kCombs] = {}, pi[2][kPasses] = {};
+    float damp[2][kCombs] = {};
+    void setup() {
+        static const int combLen[kCombs] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617}, passLen[kPasses] = {556, 441, 341, 225};
+        for (int c = 0; c < 2; ++c) {
+            for (int i = 0; i < kCombs; ++i) comb[c][i].assign((size_t)(combLen[i] + c * 23), 0.0f);
+            for (int i = 0; i < kPasses; ++i) pass[c][i].assign((size_t)(passLen[i] + c * 23), 0.0f);
+        }
+    }
+    void clear() {
+        for (int c = 0; c < 2; ++c) {
+            for (int i = 0; i < kCombs; ++i) {
+                std::fill(comb[c][i].begin(), comb[c][i].end(), 0.0f);
+                damp[c][i] = 0;
+            }
+            for (int i = 0; i < kPasses; ++i) std::fill(pass[c][i].begin(), pass[c][i].end(), 0.0f);
+        }
+    }
+    inline float run(float in, int c) {
+        float out = 0;
+        for (int i = 0; i < kCombs; ++i) {
+            std::vector<float> &b = comb[c][i];
+            float y = b[(size_t)ci[c][i]];
+            damp[c][i] = y * 0.72f + damp[c][i] * 0.28f;
+            b[(size_t)ci[c][i]] = in + damp[c][i] * 0.86f;
+            if (++ci[c][i] >= (int)b.size()) ci[c][i] = 0;
+            out += y;
+        }
+        for (int i = 0; i < kPasses; ++i) {
+            std::vector<float> &b = pass[c][i];
+            float y = b[(size_t)pi[c][i]];
+            b[(size_t)pi[c][i]] = out + y * 0.5f;
+            if (++pi[c][i] >= (int)b.size()) pi[c][i] = 0;
+            out = y - out;
+        }
+        return out;
+    }
+};
+
+struct OutputFx {
+    int now = 0, want = 0;
+    float mix = 0;
+    Biquad hp, lp1, lp2, glass1, glass2, crush;
+    Hall hall;
+    uint32_t seed = 22222;
+    float held[2] = {0, 0}, sum[2] = {0, 0};
+    int count = 0;
+
+    void setup(double sr) {
+        hp.set(true, 330.0, 0.707, sr);
+        lp1.set(false, 3300.0, 0.707, sr);
+        lp2.set(false, 3600.0, 0.9, sr);
+        glass1.set(false, 430.0, 0.6, sr);
+        glass2.set(false, 520.0, 0.707, sr);
+        crush.set(false, 5200.0, 0.707, sr);
+        hall.setup();
+    }
+
+    void reset() {
+        hp.clear();
+        lp1.clear();
+        lp2.clear();
+        glass1.clear();
+        glass2.clear();
+        crush.clear();
+        hall.clear();
+        held[0] = held[1] = sum[0] = sum[1] = 0;
+        count = 0;
+    }
+
+    void process(float *L, float *R, int n) {
+        for (int i = 0; i < n; ++i) {
+            float target = (now == want && now != BE_FX_NONE) ? 1.0f : 0.0f;
+            mix += (target - mix) * 0.0012f;
+            if (now != want && mix < 0.004f) {
+                now = want;
+                mix = 0;
+                reset();
+            }
+            if (now == BE_FX_NONE) continue;
+            float l = L[i], r = R[i], wl = l, wr = r;
+            switch (now) {
+            case BE_FX_RADIO: {
+                seed = seed * 1664525u + 1013904223u;
+                float hiss = ((float)(seed >> 9) / 4194304.0f - 1.0f) * 0.0022f;
+                float m = lp2.run(lp1.run(hp.run(0.5f * (l + r), 0), 0), 0);
+                wl = wr = std::tanh(m * 2.6f) * 0.72f + hiss;
+                break;
+            }
+            case BE_FX_GLASS: {
+                float a = glass2.run(glass1.run(l, 0), 0), b = glass2.run(glass1.run(r, 1), 1);
+                float midS = 0.5f * (a + b), side = 0.2f * (a - b);
+                wl = (midS + side) * 1.2f;
+                wr = (midS - side) * 1.2f;
+                break;
+            }
+            case BE_FX_HALL: {
+                float in = (l + r) * 0.015f;
+                wl = l * 0.8f + hall.run(in, 0) * 0.9f;
+                wr = r * 0.8f + hall.run(in, 1) * 0.9f;
+                break;
+            }
+            case BE_FX_LOFI: {
+                sum[0] += l;
+                sum[1] += r;
+                if (++count >= 5) {
+                    held[0] = std::round(sum[0] * 0.2f * 24.0f) / 24.0f;
+                    held[1] = std::round(sum[1] * 0.2f * 24.0f) / 24.0f;
+                    sum[0] = sum[1] = 0;
+                    count = 0;
+                }
+                wl = crush.run(held[0], 0);
+                wr = crush.run(held[1], 1);
+                break;
+            }
+            default: break;
+            }
+            L[i] = l + (wl - l) * mix;
+            R[i] = r + (wr - r) * mix;
+        }
     }
 };
 
@@ -583,6 +730,7 @@ struct be_engine {
     bool used[kMaxEvents];
     int pending = 0;
     float limiter = 1.0f, peak = 0, load = 0;
+    OutputFx fx;
     Ring<Cmd, 2048> cmds;
     Ring<be_track *, 64> retired;
     std::atomic<uint32_t> seq{0};
@@ -771,6 +919,7 @@ struct be_engine {
             }
             break;
         }
+        case C_FX: fx.want = c.param; break;
         case C_RESET:
             for (int k = 0; k < BE_DECKS; ++k) {
                 deck[k].stop();
@@ -851,6 +1000,7 @@ struct be_engine {
                 }
                 ++epoch;
             }
+            if (fx.now != BE_FX_NONE || fx.want != BE_FX_NONE) fx.process(L + done, R + done, n);
             for (int i = done; i < done + n; ++i) {
                 float l = L[i] * 0.84f, r = R[i] * 0.84f;
                 float a = std::fabs(l) > std::fabs(r) ? std::fabs(l) : std::fabs(r);
@@ -883,6 +1033,7 @@ struct be_engine {
         s.pendingEvents = pending;
         s.peak = peak;
         s.load = load;
+        s.masterFx = fx.want;
         for (int k = 0; k < BE_DECKS; ++k) {
             Deck &d = deck[k];
             be_deck_state &o = s.deck[k];
@@ -913,6 +1064,7 @@ be_engine *be_create(double sampleRate) {
     for (int k = 0; k < BE_DECKS; ++k) e->deck[k].setup(sampleRate);
     for (int i = 0; i < kMaxEvents; ++i) e->used[i] = false;
     e->tempo.set(120.0f);
+    e->fx.setup(sampleRate);
     mach_timebase_info(&e->timebase);
     e->publish();
     return e;
@@ -979,5 +1131,6 @@ void be_scratch_move(be_engine *e, int32_t deck, double deltaFrames) { post(e, C
 void be_scratch_end(be_engine *e, int32_t deck) { post(e, C_SCR_END, deck, 0, 0); }
 void be_sync_phase(be_engine *e, int32_t deck) { post(e, C_SYNC, deck, 0, 0); }
 void be_reset(be_engine *e) { post(e, C_RESET, -1, 0, 0); }
+void be_set_master_fx(be_engine *e, int32_t preset) { post(e, C_FX, -1, preset, 0); }
 
 }

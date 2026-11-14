@@ -35,6 +35,9 @@ Built for one MacBook and one listener. The song library is private and is not p
   - `E` ECHO: echo out into the next song
   - `K` BRAKE: vinyl brake into the next song
   - `X` SPIN: spinback into the next song
+  - `N` SWITCH: a quick change at the next good moment. Blend waits for the nearest phrase where the vocal pauses, gives the old song one bar of filter, echo and a short stutter, and drops the next song in on its first strong bar
+- **Output effects** (`F` cycles them): `RADIO` (a small mono speaker), `GLASS` (the party heard through a window), `HALL` (a big room), `LO-FI` (an old game console). They colour everything that plays, transitions included.
+- **Touch Bar**: `SWITCH` with a countdown, the four effects as toggles, a `STYLE` picker for the mix technique, a `ROLL` pad that stutters for as long as it is held, and four dots that follow the beat with the number of bars left until the next automatic mix.
 - **Trackpad as the console** (Tab switches between cursor and console):
   - left half and right half are the two platters, one finger scratches like vinyl, a finger held still stops the record
   - two fingers up or down sweep a filter that springs back

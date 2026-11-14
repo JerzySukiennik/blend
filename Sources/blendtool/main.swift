@@ -288,6 +288,8 @@ func automix(_ argv: [String]) {
                 session.toggleStem(Int(parts[1])!, Stem(rawValue: Int(parts[2])!)!)
             } else if cmd.hasPrefix("style:") {
                 session.setStyle(Technique(rawValue: String(cmd.dropFirst(6))))
+            } else if cmd.hasPrefix("fx:") {
+                session.setEffect(Effect.allCases.first { $0.label.lowercased() == String(cmd.dropFirst(3)) })
             } else if cmd == "roll:on" {
                 session.rollBegin()
             } else if cmd == "roll:off" {

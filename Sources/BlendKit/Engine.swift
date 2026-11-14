@@ -47,6 +47,7 @@ public final class Engine {
     public func scratchEnd(_ deck: Int) { be_scratch_end(raw, Int32(deck)) }
     public func syncPhase(_ deck: Int) { be_sync_phase(raw, Int32(deck)) }
     public func reset() { be_reset(raw) }
+    public func setOutputEffect(_ preset: Int32) { be_set_master_fx(raw, preset) }
 
     public func event(_ type: Int32, deck: Int, at beat: Double, value: Double = 0, from: Double = .nan, tag: Int = 0) {
         var ev = be_event(type: type, deck: Int32(deck), param: 0, tag: Int32(tag), curve: 0, beat: beat, endBeat: beat, value: value, from: from)

@@ -44,6 +44,8 @@ enum {
 
 enum { BE_CURVE_LINEAR = 0, BE_CURVE_SMOOTH = 1, BE_CURVE_EASE_IN = 2, BE_CURVE_EASE_OUT = 3 };
 
+enum { BE_FX_NONE = 0, BE_FX_RADIO = 1, BE_FX_GLASS = 2, BE_FX_HALL = 3, BE_FX_LOFI = 4 };
+
 typedef struct be_engine be_engine;
 typedef struct be_track be_track;
 
@@ -84,6 +86,7 @@ typedef struct {
     int32_t pendingEvents;
     float peak;
     float load;
+    int32_t masterFx;
     be_deck_state deck[BE_DECKS];
 } be_state;
 
@@ -114,6 +117,7 @@ void be_scratch_move(be_engine *e, int32_t deck, double deltaFrames);
 void be_scratch_end(be_engine *e, int32_t deck);
 void be_sync_phase(be_engine *e, int32_t deck);
 void be_reset(be_engine *e);
+void be_set_master_fx(be_engine *e, int32_t preset);
 
 typedef struct {
     double bpm;

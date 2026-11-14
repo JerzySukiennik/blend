@@ -1,4 +1,4 @@
-// Blend app: entry point, window, keyboard map, cursor capture for console mode and the frame clock.
+// Blend app: entry point, window, keyboard map, Touch Bar, cursor capture for console mode and the frame clock.
 import AppKit
 import BlendKit
 import QuartzCore
@@ -15,6 +15,7 @@ struct TestOptions {
     var keys: [(Double, String)] = []
     var tour: Int?
     var fits = false
+    var bar: String?
 
     init(_ argv: [String]) {
         var i = 1
@@ -25,6 +26,7 @@ struct TestOptions {
             case "--console": console = true
             case "--play": play = true
             case "--fits": fits = true
+            case "--bar": bar = next; i += 1
             case "--queue": queue = next.split(separator: "|").map(String.init); i += 1
             case "--snapshot": snapshot = next; i += 1
             case "--after": after = Double(next) ?? 3; i += 1
@@ -40,7 +42,7 @@ struct TestOptions {
         }
     }
 
-    var testing: Bool { snapshot != nil }
+    var testing: Bool { snapshot != nil || bar != nil }
 }
 
 final class FreeWindow: NSWindow {
@@ -54,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var pump: Thread?
     var window: FreeWindow!
     var trackpad: TrackpadView!
+    var bar: ConsoleBar!
     var link: CADisplayLink?
     var idle: Timer?
     var monitor: Any?
@@ -84,10 +87,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         trackpad.model = model
         container.addSubview(trackpad)
         window.contentView = container
+        bar = ConsoleBar(model: model)
+        window.touchBar = bar.make()
         if options.testing {
             window.free = true
             window.setFrame(NSRect(x: -4000, y: -3000, width: 1280, height: 800), display: true)
-            window.orderBack(nil)
+            if options.bar != nil {
+                window.alphaValue = 0
+                window.ignoresMouseEvents = true
+                window.center()
+                window.makeKeyAndOrderFront(nil)
+                window.makeFirstResponder(trackpad)
+                NSApp.activate(ignoringOtherApps: true)
+            } else {
+                window.orderBack(nil)
+            }
         } else {
             if !window.setFrameUsingName("BlendMain") { window.center() }
             window.makeKeyAndOrderFront(nil)
@@ -210,11 +224,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     session.perform(.mix)
                 } else if key == "m" {
                     session.cycleStyle()
+                } else if key == "f" {
+                    session.cycleEffect()
+                } else if key == "styles" {
+                    self.bar.showStyles()
                 } else if let move = Move.allCases.first(where: { $0.key.lowercased() == key }) {
                     session.perform(move)
                 } else if let n = Int(key) {
                     session.toggleStem(n < 5 && n > 0 ? 0 : 1, Stem(rawValue: n == 0 ? 3 : (n - 1) % 6 % 4) ?? .vocals)
                 }
+            }
+        }
+        if let path = options.bar {
+            DispatchQueue.main.asyncAfter(deadline: .now() + options.after) { [weak self] in
+                print("active \(NSApp.isActive) key \(self?.window.isKeyWindow ?? false)", self?.bar.snapshot(to: path) ?? "no bar")
+                NSApp.terminate(nil)
             }
         }
         if let path = options.snapshot {
@@ -310,6 +334,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "e": session.perform(.echo)
         case "k": session.perform(.brake)
         case "x": session.perform(.spin)
+        case "n": session.perform(.quick)
+        case "f": session.cycleEffect()
         case "r": session.rollBegin()
         case "m": session.cycleStyle(e.modifierFlags.contains(.shift) ? -1 : 1)
         case "1": session.toggleStem(0, .vocals)
@@ -362,5 +388,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(delegate.options.testing ? .accessory : .regular)
+app.setActivationPolicy(delegate.options.testing && delegate.options.bar == nil ? .accessory : .regular)
 app.run()

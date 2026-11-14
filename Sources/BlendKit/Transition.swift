@@ -3,10 +3,10 @@ import BlendEngine
 import Foundation
 
 public enum Move: String, CaseIterable, Identifiable {
-    case mix, vocal, beat, build, drop, loop, roll, echo, brake, spin
+    case mix, vocal, beat, build, drop, loop, roll, echo, brake, spin, quick
 
     public var id: String { rawValue }
-    public var label: String { rawValue.uppercased() }
+    public var label: String { self == .quick ? "SWITCH" : rawValue.uppercased() }
     public var key: String {
         switch self {
         case .mix: return "space"
@@ -19,6 +19,7 @@ public enum Move: String, CaseIterable, Identifiable {
         case .echo: return "E"
         case .brake: return "K"
         case .spin: return "X"
+        case .quick: return "N"
         }
     }
     public var help: String {
@@ -33,7 +34,18 @@ public enum Move: String, CaseIterable, Identifiable {
         case .echo: return "Echo out into the next song"
         case .brake: return "Vinyl brake into the next song"
         case .spin: return "Spin the record back into the next song"
+        case .quick: return "Switch to the next song at the next good moment"
         }
+    }
+}
+
+public enum Effect: Int32, CaseIterable, Identifiable {
+    case radio = 1, glass, hall, lofi
+
+    public var id: Int32 { rawValue }
+    public var label: String { ["RADIO", "GLASS", "HALL", "LO-FI"][Int(rawValue) - 1] }
+    public var help: String {
+        ["Sounds like a small radio", "Sounds like the party is behind a window", "Sounds like a big hall", "Sounds like an old game console"][Int(rawValue) - 1]
     }
 }
 

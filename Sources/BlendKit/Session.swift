@@ -45,6 +45,8 @@ public final class Session {
     public private(set) var rolling = false
     public private(set) var upcoming: Technique?
     public private(set) var style: Technique?
+    public private(set) var effect: Effect?
+    public private(set) var beatInBar = -1
     public var autoMix = true
 
     @ObservationIgnored public var loader: (TrackInfo, @escaping (Result<LoadedTrack, Error>) -> Void) -> Void = { info, done in
@@ -177,6 +179,21 @@ public final class Session {
         plan = nil
         planEpoch += 1
         say(style.map { "\($0.label): \($0.help)" } ?? "AUTO: Blend picks the mix style")
+    }
+
+    public func setEffect(_ new: Effect?) {
+        effect = new
+        engine.setOutputEffect(new?.rawValue ?? 0)
+        log?("effect \(new?.label ?? "off")")
+    }
+
+    public func toggleEffect(_ e: Effect) { setEffect(effect == e ? nil : e) }
+
+    public func cycleEffect() {
+        let all: [Effect?] = [nil] + Effect.allCases.map { $0 }
+        let i = all.firstIndex { $0 == effect } ?? 0
+        setEffect(all[(i + 1) % all.count])
+        say(effect.map { "\($0.label): \($0.help)" } ?? "Effect off")
     }
 
     public func setStyle(_ new: Technique?) {
@@ -345,6 +362,7 @@ public final class Session {
         case .drop: dropJump()
         case .loop: toggleLoop()
         case .roll: rollBegin(hold: false)
+        case .quick: quickSwitch()
         }
     }
 
@@ -896,6 +914,72 @@ public final class Session {
         }
     }
 
+    private func quickSwitch() {
+        guard let c = current, !paused, let a = decks[c].track else { return }
+        guard transition == nil else {
+            say("Wait for the mix to finish")
+            return
+        }
+        guard mash == nil else {
+            say("Turn the mashup off first")
+            return
+        }
+        guard let n = nextDeck, let b = decks[n].track else {
+            say(queue.isEmpty ? "Queue a song to switch to" : "Next song is still loading")
+            return
+        }
+        let s = engine.state, sa = a.structure, sb = b.structure, da = s.deck(c)
+        let first = sa.bar(atBeat: da.beat + 6) + 1
+        var bar = first, best = -100.0
+        for trial in first..<(first + 5) {
+            var score = -0.3 * Double(trial - first)
+            if sa.isPhrase(trial, every: 4) {
+                score += 2
+            } else if sa.isPhrase(trial, every: 2) {
+                score += 1
+            }
+            if !sa.stemPresent[Stem.vocals.rawValue] || vocalGap(a, at: trial) { score += 1.5 }
+            if score > best {
+                best = score
+                bar = trial
+            }
+        }
+        var land = sb.firstFull - sb.startBar <= 32 ? sb.firstFull : max(0, sb.firstSound)
+        if land >= 0, land + 4 <= sb.bars {
+            let base = sb.total[land..<(land + 4)].reduce(0, +) / 4
+            for bar in land..<min(sb.bars - 4, land + 17) where sb.total[bar..<(bar + 4)].reduce(0, +) / 4 >= max(0.7, base * 1.4) {
+                land = bar
+                break
+            }
+        }
+        if sb.stemPresent[Stem.vocals.rawValue], let sung = sb.vocalStarts.first, sung < land { land = max(0, sb.phraseStart(atOrBefore: sung, every: 4)) }
+        let landing = sb.beat(ofBar: land)
+        let end = sa.beat(ofBar: bar) - da.offset, tag = nextTag()
+        let filter = Int32(BE_P_FILTER), echo = Int32(BE_P_ECHO), volume = Int32(BE_P_VOLUME)
+        let ratio = b.analysis.bpm / a.analysis.bpm
+        engine.ramp(deck: c, filter, to: 0.5, start: end - 4, end: end - 0.25, curve: .easeIn, tag: tag)
+        engine.ramp(deck: c, echo, to: 0.6, start: end - 2, end: end - 1, tag: tag)
+        engine.event(Int32(BE_EV_ROLL), deck: c, at: end - 1, value: 0.5, tag: tag)
+        engine.event(Int32(BE_EV_ROLL), deck: c, at: end - 0.5, value: 0.25, tag: tag)
+        engine.event(Int32(BE_EV_UNROLL), deck: c, at: end, tag: tag)
+        engine.ramp(deck: c, volume, to: 0, start: end - 0.06, end: end, tag: tag)
+        engine.ramp(deck: c, echo, to: 0, start: end, end: end + 0.05, tag: tag)
+        prepareFull(n)
+        engine.start(n, at: end, trackBeat: landing, tag: tag)
+        if ratio <= 1.11, ratio >= 0.9 {
+            engine.tempoRamp(to: b.analysis.bpm, start: end, end: end + 8, tag: tag)
+        } else {
+            engine.tempoRamp(to: b.analysis.bpm, start: end, end: end, tag: tag)
+        }
+        engine.stop(c, at: end + 0.1, tag: tag)
+        var tr = Transition(style: .echo, from: c, to: n, startBeat: end - 4, length: 4, toTrackBeat: landing, tempoFrom: s.masterBpm, tempoTo: b.analysis.bpm, tag: tag)
+        tr.name = "SWITCH"
+        tr.committed = true
+        transition = tr
+        plan = nil
+        log?("commit switch at \(a.info.title) bar \(bar) -> \(b.info.title) bar \(land), end \(end)")
+    }
+
     public func rollBegin(hold: Bool = true) {
         guard let c = current, !paused, decks[c].track != nil, transition?.style != .build else { return }
         let d = engine.state.deck(c)
@@ -974,6 +1058,11 @@ public final class Session {
         if loopNow != looping { looping = loopNow }
         let rollNow = current.map { s.deck($0).rolling != 0 } ?? false
         if rollNow != rolling { rolling = rollNow }
+        var pulse = -1
+        if let c = current, let t = decks[c].track, s.deck(c).playing != 0 {
+            pulse = ((Int(floor(s.deck(c).beat)) - t.structure.barPhase) % 4 + 4) % 4
+        }
+        if pulse != beatInBar { beatInBar = pulse }
         if let tr = transition {
             let p = tr.progress(atBeat: beat)
             if mixProgress == nil || abs(p - (mixProgress ?? 0)) > 0.012 || (p >= 1 && mixProgress != 1) { mixProgress = p }
