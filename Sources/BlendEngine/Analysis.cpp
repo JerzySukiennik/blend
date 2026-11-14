@@ -360,6 +360,19 @@ std::vector<float> beatEnergy(const be_track *t, double fpb, double first, int &
 
 bool be_fit_grid(const double *beatTimes, int n, double &period, double &first, float &confidence) { return fitGrid(beatTimes, n, period, first, confidence); }
 
+bool be_own_grid(const be_track *t, double &period, double &first) {
+    int lead = be_lead_stem(t);
+    std::vector<float> rhythm = mono(t, lead >= 0 ? (1u << lead) : 0xFu);
+    double fps = 0;
+    std::vector<float> osf = onsetStrength(rhythm, 256, fps);
+    if (osf.size() < 400) return false;
+    std::vector<double> beats = onsetBeats(osf, fps, coarseTempo(osf, fps));
+    float conf = 0;
+    if (!fitGrid(beats.data(), (int)beats.size(), period, first, conf)) return false;
+    first = refinePhase(rhythm, first, period, !(t->stems == BE_STEMS && lead == kDrums));
+    return true;
+}
+
 int be_lead_stem(const be_track *t) {
     if (t->stems != BE_STEMS) return 0;
     double drums = 0, all = 0;

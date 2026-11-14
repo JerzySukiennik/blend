@@ -459,9 +459,39 @@ func twin(_ argv: [String]) {
     var anchors: [(Int, Int)] = []
     for (x, y) in pairs where anchors.last.map({ y - $0.1 != x - $0.0 }) ?? true { anchors.append((x, y)) }
     print("runs with a constant offset (bar here, bar there):", anchors.map { "[\($0.0), \($0.1)]" }.joined(separator: ", "))
-    guard argv.count >= 3, let offset = Int(argv[2]) else { return }
     let ca = barChroma(a, stems: [2, 3]), cb = barChroma(b, stems: [2, 3])
-    let bars = (0..<ca.count).filter { $0 + offset >= 0 && $0 + offset < cb.count }
+    var voice: [(Int, Float)] = [], harmony: [(Int, Int, Float)] = []
+    for d in -24...max(-24, vb.count - 8) {
+        let rows = (0..<va.count).filter { $0 + d >= 0 && $0 + d < vb.count }
+        guard rows.count >= min(va.count, vb.count) / 2 else { continue }
+        voice.append((d, rows.reduce(Float(0)) { $0 + match($1, $1 + d, bars: 1) } / Float(rows.count)))
+        for shift in 0..<12 {
+            var total: Float = 0
+            for x in rows {
+                for q in 0..<4 {
+                    for k in 0..<12 { total += ca[x][q * 12 + k] * cb[x + d][q * 12 + (k + shift) % 12] }
+                }
+            }
+            harmony.append((d, shift > 6 ? shift - 12 : shift, total / Float(rows.count)))
+        }
+    }
+    print("whole song, best constant offsets by voice:", voice.sorted { $0.1 > $1.1 }.prefix(6).map { String(format: "%+d:%.2f", $0.0, $0.1) }.joined(separator: "  "))
+    print("whole song, best offset and semitones by harmony:", harmony.sorted { $0.2 > $1.2 }.prefix(8).map { String(format: "%+d/%+d:%.3f", $0.0, $0.1, $0.2) }.joined(separator: "  "))
+    guard argv.count >= 3, let offset = Int(argv[2]) else { return }
+    let from = argv.count >= 4 ? Int(argv[3]) ?? 0 : 0, to = argv.count >= 5 ? Int(argv[4]) ?? va.count : va.count
+    let bars = (max(0, from)..<min(to, ca.count)).filter { $0 + offset >= 0 && $0 + offset < cb.count }
+    let flatA = bars.flatMap { va[$0] }, flatB = bars.flatMap { vb[$0 + offset] }
+    var shifts: [(Int, Float)] = []
+    for shift in -12...12 {
+        var sxy: Float = 0, sxx: Float = 0, syy: Float = 0
+        for i in 0..<flatA.count where i + shift >= 0 && i + shift < flatB.count {
+            sxy += flatA[i] * flatB[i + shift]
+            sxx += flatA[i] * flatA[i]
+            syy += flatB[i + shift] * flatB[i + shift]
+        }
+        shifts.append((shift, sxx > 0 && syy > 0 ? sxy / (sxx * syy).squareRoot() : 0))
+    }
+    print("bars \(bars.first ?? 0)-\(bars.last ?? 0) at offset \(offset): voice match by shift in quarter beats:", shifts.sorted { $0.1 > $1.1 }.prefix(5).map { String(format: "%+d:%.3f", $0.0, $0.1) }.joined(separator: "  "))
     for shift in 0..<12 {
         var total: Float = 0
         for x in bars {

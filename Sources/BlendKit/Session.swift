@@ -402,7 +402,7 @@ public final class Session {
         guard let anchors = twinAnchors(a, b), let first = anchors.min(by: { ($0.from, $0.to) < ($1.from, $1.to) }) else { return nil }
         guard let hit = anchors.filter({ $0.from <= bar }).max(by: { ($0.from, -$0.to) < ($1.from, -$1.to) }) else { return max(0, first.to - (first.from - bar)) }
         let room = max(8, (b.structure.lastStrong - 8 - hit.to) / 8 * 8)
-        return hit.to + (bar - hit.from) % room
+        return bar - hit.from < room ? hit.to + (bar - hit.from) : nil
     }
 
     private func twinStart(_ a: LoadedTrack, _ b: LoadedTrack, after now: Int, bars: Int) -> Int? {
@@ -477,7 +477,7 @@ public final class Session {
             }
             let left = max(2, endBar - bar)
             while bars > 2 && bars > left { bars /= 2 }
-            if related != nil {
+            if related != nil, twinBar(a, bar: bar, b) != nil {
                 while bars > 2 && !twinRuns(a, bar: bar, bars: bars, b) { bars /= 2 }
             }
             return (bar, bars)

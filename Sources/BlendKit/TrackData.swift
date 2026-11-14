@@ -5,7 +5,7 @@ import BlendEngine
 import Foundation
 
 public struct Analysis: Codable {
-    public static let currentVersion = 16
+    public static let currentVersion = 17
 
     public var version = Analysis.currentVersion
     public var bpm: Double

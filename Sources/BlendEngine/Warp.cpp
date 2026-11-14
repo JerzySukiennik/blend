@@ -346,6 +346,8 @@ int32_t be_track_straighten(be_track *t, double *beatTimes, int32_t nBeats, doub
         now.resize((size_t)t->frames * 2);
         resample(was, now.data(), t->frames, map, sinc);
         w.tightBefore = fitted ? tightness(was, t->frames, T0 * unit, p0, lead < 0) : 0;
+        double ownT = 0, ownP = 0;
+        if (w.before < 0.7f && be_own_grid(t, ownT, ownP)) w.tightBefore = std::max(w.tightBefore, tightness(was, t->frames, ownT, ownP, lead < 0));
         w.tightAfter = tightness(now.data(), t->frames, T1 * unit, p1, lead < 0);
         bool tighter = w.tightAfter >= w.tightBefore + kTighter;
         bool repaired = w.before < kBroken && w.after >= std::max(w.before + 0.05f, kProof) && w.tightAfter >= w.tightBefore - 0.02f;

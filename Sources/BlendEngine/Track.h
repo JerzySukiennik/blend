@@ -33,6 +33,7 @@ struct be_track {
 };
 
 bool be_fit_grid(const double *beatTimes, int n, double &period, double &first, float &confidence);
+bool be_own_grid(const be_track *t, double &period, double &first);
 float be_kick_tightness(const int16_t *pcm, int64_t frames, double period, double first, bool broad);
 int be_lead_stem(const be_track *t);
 std::vector<int16_t> be_mixdown(const be_track *t);
