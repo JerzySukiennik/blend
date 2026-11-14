@@ -69,6 +69,7 @@ public struct Structure {
     public let vocalStarts: [Int]
     public let firstFull: Int
     public let lastStrong: Int
+    public let finish: Int
     public let firstSound: Int
     public let anchors: [Int]
 
@@ -168,7 +169,11 @@ public struct Structure {
             }
         }
         vocalStarts = vs
-        lastStrong = total.lastIndex { $0 > 0.3 } ?? max(0, count - 1)
+        let strong = total.lastIndex { $0 > 0.3 } ?? max(0, count - 1)
+        lastStrong = strong
+        var solid = strong
+        while solid > 0 && total[solid] < 0.6 { solid -= 1 }
+        finish = strong - solid >= 6 ? solid + 3 : strong + 1
         firstSound = total.firstIndex { $0 > 0.12 } ?? 0
 
         var score = [Float](repeating: 0, count: 8)

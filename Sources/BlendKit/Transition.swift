@@ -1,4 +1,4 @@
-// Blend kit: transition plans. A technique picks the choreography: parameter lanes over progress 0...1 plus timed cues, playable by the beat clock or scrubbed by hand.
+// Blend kit: transition plans. A technique picks the choreography: parameter lanes over progress 0...1 plus timed cues, playable by the beat clock or scrubbed by hand. One drum kit, one bass and one lead vocal sound at a time.
 import BlendEngine
 import Foundation
 
@@ -38,13 +38,13 @@ public enum Move: String, CaseIterable, Identifiable {
 }
 
 public enum Technique: String, CaseIterable, Identifiable {
-    case swap, melt, carry, ride, loop, chop, roll, wash, spin
+    case swap, melt, carry, ride, loop, chop, bridge, roll, wash, spin
 
     public var id: String { rawValue }
     public var label: String { rawValue.uppercased() }
     public var blends: Bool { self != .roll && self != .wash && self != .spin }
-    var scripted: Bool { self == .loop || self == .chop }
-    var needsStems: Bool { self == .melt || self == .carry || self == .loop }
+    var scripted: Bool { self == .loop || self == .chop || self == .bridge }
+    var needsStems: Bool { self == .melt || self == .carry || self == .loop || self == .bridge }
     public var help: String {
         switch self {
         case .swap: return "New song comes in thin, the lows trade places on the phrase"
@@ -53,6 +53,7 @@ public enum Technique: String, CaseIterable, Identifiable {
         case .ride: return "New drums ride underneath, then a clean swap"
         case .loop: return "Old song locks into a shrinking loop, new one lands on the one"
         case .chop: return "The two songs trade beats, then the new one takes over"
+        case .bridge: return "Old drums loop and glide to the new tempo, new song comes in on top"
         case .roll: return "Stutter build on the old song, new one drops in"
         case .wash: return "Old song washes out in filter and echo"
         case .spin: return "Spinback into the new song"
@@ -113,6 +114,7 @@ public struct Transition {
     public var clash = false
     public var wide = false
     public var twin = false
+    public var toDelay = 0.0
     public var technique: Technique = .swap
     public var name = ""
     var lanes: [Lane] = []
@@ -126,12 +128,16 @@ public struct Transition {
     }
 }
 
+typealias Seg = (Double, Double, Double)
+
 enum Lanes {
     static let thin = 0.45
+    static let air = 0.62
+    static let stage = 0.86
 
     static func blend(_ tech: Technique, from f: Int, to t: Int, fromStems: Bool, toStems: Bool, toDrums: Bool, toPlaying: Bool, beats: Double, current: (Int, Int32) -> Double) -> [Lane] {
         var out: [Lane] = []
-        func lane(_ deck: Int, _ param: Int32, initial: Double?, _ segs: [(Double, Double, Double)]) {
+        func lane(_ deck: Int, _ param: Int32, initial: Double?, _ segs: [Seg]) {
             let isTo = deck == t
             let apply = isTo && !toPlaying && initial != nil
             let base = apply ? initial! : current(deck, param)
@@ -139,82 +145,118 @@ enum Lanes {
         }
         let vocals = Int32(BE_P_STEM0), drums = Int32(BE_P_STEM1), bass = Int32(BE_P_STEM2), music = Int32(BE_P_STEM3)
         let volume = Int32(BE_P_VOLUME), filter = Int32(BE_P_FILTER), echo = Int32(BE_P_ECHO)
-        let q = 1 / beats, e = 0.05 * q
-        let clash = tech == .ride
-        let mid = clash ? 0.75 : 0.5
-        let swap = (mid - q, mid)
-        let land = (1 - e, 1.0)
-        let c = 1 - 8 * q
-        let gateIn: [(Double, Double, Double)] = [(c + 2 * q - e, c + 2 * q, 1), (c + 4 * q - e, c + 4 * q, 0), (c + 5 * q - e, c + 5 * q, 1), (c + 6 * q - e, c + 6 * q, 0), (c + 7 * q - e, c + 7 * q, 1)]
-        let gateOut: [(Double, Double, Double)] = [(c + 2 * q - e, c + 2 * q, 0), (c + 4 * q - e, c + 4 * q, 1), (c + 5 * q - e, c + 5 * q, 0), (c + 6 * q - e, c + 6 * q, 1), (c + 7 * q - e, c + 7 * q, 0)]
-
-        switch tech {
-        case .loop where toStems:
-            lane(t, drums, initial: 0, [(0, 0.125, 1)])
-            for stem in [music, bass, vocals] { lane(t, stem, initial: 0, [(land.0, land.1, 1)]) }
-            lane(t, volume, initial: 1, [(0, q, 1)])
-            lane(t, filter, initial: thin, [(land.0, land.1, 0)])
-        case .loop:
-            lane(t, volume, initial: 0, [(land.0, land.1, 1)])
-            lane(t, filter, initial: 0, [])
-        case .chop where toStems:
-            lane(t, drums, initial: 0, [(0, min(0.125, c / 2), 1)])
-            for stem in [music, bass, vocals] { lane(t, stem, initial: 0, [(c, c + q, 1)]) }
-            lane(t, volume, initial: 1, [(c - e, c, 0)] + gateIn)
-            lane(t, filter, initial: thin, [(c, c + q, 0)])
-        case .chop:
-            lane(t, volume, initial: 0, gateIn)
-            lane(t, filter, initial: 0, [])
-        default:
-            if toStems {
-                lane(t, drums, initial: 0, [(0, clash ? 0.1875 : 0.125, 1)])
-                lane(t, music, initial: 0, !clash ? [(0.125, 0.375, 1)] : toDrums ? [(swap.0, swap.1, 1)] : [(0, 0.25, 0.6), (swap.0, swap.1, 1)])
-                lane(t, vocals, initial: 0, tech == .carry ? [(0.875, 1, 1)] : [(mid, mid + q, 1)])
-                lane(t, bass, initial: 0, [(swap.0, swap.1, 1)])
-                lane(t, volume, initial: 1, [(0, q, 1)])
-                lane(t, filter, initial: thin, [(swap.0, swap.1, 0)])
-            } else {
-                lane(t, volume, initial: 0, [(0, 0.4, 1)])
-                lane(t, filter, initial: thin, [(swap.0, swap.1, 0)])
-            }
+        let q: Double = 1 / beats
+        let e: Double = 0.05 * q
+        let late = tech == .ride || tech == .bridge
+        let mid: Double = late ? 0.75 : 0.5
+        let s0: Double = mid - q
+        let pre: Double = min(0.4375, s0)
+        let c: Double = 1 - 8 * q
+        let none: [Seg] = []
+        let open: Seg = (s0, mid, 1.0)
+        let shut: Seg = (s0, mid, 0.0)
+        let clear: Seg = (s0, mid, 0.0)
+        let rise: Seg = (mid, min(1.0, mid + 0.125), 1.0)
+        let land: Seg = (1 - e, 1.0, 1.0)
+        let drop: Seg = (1 - e, 1.0, 0.0)
+        let settle: Seg = (0.0625, 0.1875, stage)
+        var gateIn: [Seg] = []
+        var gateOut: [Seg] = []
+        let steps: [(Double, Double)] = [(2, 1), (4, 0), (5, 1), (6, 0), (7, 1)]
+        for (beat, level) in steps {
+            gateIn.append((c + beat * q - e, c + beat * q, level))
+            gateOut.append((c + beat * q - e, c + beat * q, 1 - level))
         }
-        lane(t, echo, initial: 0, [])
 
-        switch tech {
-        case .loop:
-            lane(f, filter, initial: nil, [(0.5, 0.75, 0.3), (0.75, 1, 0.68)])
-            lane(f, echo, initial: nil, [(1 - 2 * q, 1 - q, 0.8)])
-            lane(f, volume, initial: nil, [(land.0, land.1, 0)])
-        case .chop:
+        if tech == .loop, toStems {
+            lane(t, drums, initial: 0, [(0.0, 0.125, 1.0)])
+            for stem in [music, bass, vocals] { lane(t, stem, initial: 0, [land]) }
+            lane(t, volume, initial: 1, none)
+            lane(t, filter, initial: air, [(1 - e, 1.0, 0.0)])
+        } else if tech == .loop {
+            lane(t, volume, initial: 0, [land])
+            lane(t, filter, initial: 0, none)
+        } else if tech == .chop, toStems {
+            lane(t, drums, initial: 0, [(0.0, min(0.125, c / 2), 1.0)])
+            for stem in [music, bass, vocals] { lane(t, stem, initial: 0, [(c, c + q, 1.0)]) }
+            let mute: Seg = (c - e, c, 0.0)
+            lane(t, volume, initial: 1, [mute] + gateIn)
+            lane(t, filter, initial: air, [(c, c + q, 0.0)])
+        } else if tech == .chop {
+            lane(t, volume, initial: 0, gateIn)
+            lane(t, filter, initial: 0, none)
+        } else if tech == .bridge, toStems {
+            lane(t, drums, initial: 0, [(0.5, 0.625, 1.0)])
+            for stem in [music, bass, vocals] { lane(t, stem, initial: 0, [open]) }
+            lane(t, volume, initial: 1, none)
+            lane(t, filter, initial: air, [clear])
+        } else if toStems {
+            var tune: [Seg] = [open]
+            var tone: [Seg] = [clear]
+            if tech != .ride {
+                tune = [(0.25, pre, 0.7), open]
+                tone = [(0.25, pre, thin), clear]
+            } else if !toDrums {
+                tune = [(0.0, 0.25, 0.6), open]
+            }
+            let voice: Seg = tech == .carry ? (0.875, 1.0, 1.0) : (mid, mid + q, 1.0)
+            lane(t, drums, initial: 0, [(0.0, late ? 0.1875 : 0.125, 1.0)])
+            lane(t, music, initial: 0, tune)
+            lane(t, vocals, initial: 0, [voice])
+            lane(t, bass, initial: 0, [open])
+            lane(t, volume, initial: stage, [rise])
+            lane(t, filter, initial: air, tone)
+        } else {
+            lane(t, volume, initial: 0, [(0.0, 0.4, stage), rise])
+            lane(t, filter, initial: thin, [clear])
+        }
+        lane(t, echo, initial: 0, none)
+
+        if tech == .loop {
+            lane(f, filter, initial: nil, [(0.5, 0.75, 0.3), (0.75, 1.0, 0.68)])
+            lane(f, echo, initial: nil, [(1 - 2 * q, 1 - q, 0.6)])
+            lane(f, volume, initial: nil, [drop])
+        } else if tech == .chop {
             lane(f, volume, initial: nil, gateOut)
-            lane(f, echo, initial: nil, [(c + 6 * q, c + 6.5 * q, 0.6)])
-        case .ride where fromStems:
-            lane(f, filter, initial: nil, [(0.375, swap.0, 0.4), (swap.0, swap.1, 0.62)])
-            lane(f, echo, initial: nil, [(mid - 0.125, swap.0, 0.75), (mid, mid + q, 0)])
-            for stem in [vocals, drums, bass, music] { lane(f, stem, initial: nil, [(swap.0, swap.1, 0)]) }
-        case .melt where fromStems:
-            lane(f, filter, initial: nil, [(0.125, swap.0, -0.3), (swap.1, 0.875, -0.72)])
-            lane(f, vocals, initial: nil, [(0.4375, 0.5, 0)])
-            lane(f, bass, initial: nil, [(swap.0, swap.1, 0)])
-            lane(f, drums, initial: nil, [(swap.0, swap.1, 0)])
-            lane(f, music, initial: nil, [(0.625, 0.9375, 0)])
-        case .carry where fromStems:
-            lane(f, bass, initial: nil, [(swap.0, swap.1, 0)])
-            lane(f, drums, initial: nil, [(swap.0, swap.1, 0)])
-            lane(f, music, initial: nil, [(swap.1, 0.625, 0)])
-            lane(f, filter, initial: nil, [(swap.0, swap.1, 0.3)])
-            lane(f, echo, initial: nil, [(0.8125, 0.875, 0.7), (0.9375, 1, 0)])
-            lane(f, vocals, initial: nil, [(0.875, 0.9375, 0)])
-        default:
-            lane(f, filter, initial: nil, [(swap.0, swap.1, thin), (0.5, 0.875, 0.7)])
-            lane(f, echo, initial: nil, [(0.625, 0.8125, 0.55), (0.9375, 1, 0)])
+            lane(f, echo, initial: nil, [(c + 6 * q, c + 6.5 * q, 0.45)])
+        } else if tech == .bridge, fromStems {
+            lane(f, vocals, initial: nil, [(0.0, 0.125, 0.0)])
+            lane(f, music, initial: nil, [(0.0625, 0.25, 0.0)])
+            lane(f, bass, initial: nil, [(0.125, 0.25, 0.0)])
+            lane(f, filter, initial: nil, [(0.5, s0, 0.5)])
+            lane(f, echo, initial: nil, [(0.125, 0.1875, 0.4), (0.25, 0.3125, 0.0), (0.6875, s0, 0.45), (mid, mid + q, 0.0)])
+            lane(f, drums, initial: nil, [shut])
+        } else if tech == .ride, fromStems {
+            lane(f, filter, initial: nil, [(0.375, s0, 0.4), (s0, mid, air)])
+            lane(f, echo, initial: nil, [(mid - 0.125, s0, 0.5), (mid, mid + q, 0.0)])
+            lane(f, volume, initial: nil, [settle])
+            for stem in [vocals, drums, bass, music] { lane(f, stem, initial: nil, [shut]) }
+        } else if tech == .melt, fromStems {
+            lane(f, filter, initial: nil, [(0.125, s0, -0.3), (mid, 0.875, -0.72)])
+            lane(f, volume, initial: nil, [settle])
+            lane(f, vocals, initial: nil, [(pre, 0.5, 0.0)])
+            lane(f, bass, initial: nil, [shut])
+            lane(f, drums, initial: nil, [shut])
+            lane(f, music, initial: nil, [(0.625, 0.9375, 0.0)])
+        } else if tech == .carry, fromStems {
+            lane(f, bass, initial: nil, [shut])
+            lane(f, drums, initial: nil, [shut])
+            lane(f, music, initial: nil, [(mid, 0.625, 0.0)])
+            lane(f, filter, initial: nil, [(s0, mid, 0.3)])
+            lane(f, volume, initial: nil, [settle])
+            lane(f, echo, initial: nil, [(0.8125, 0.875, 0.5), (0.9375, 1.0, 0.0)])
+            lane(f, vocals, initial: nil, [(0.875, 0.9375, 0.0)])
+        } else {
+            lane(f, filter, initial: nil, [(s0, mid, thin), (0.5, 0.875, 0.7)])
+            lane(f, echo, initial: nil, [(0.625, 0.8125, 0.4), (0.9375, 1.0, 0.0)])
             if fromStems {
-                lane(f, bass, initial: nil, [(swap.0, swap.1, 0)])
-                lane(f, vocals, initial: nil, [(0.4375, 0.5, 0)])
-                lane(f, music, initial: nil, [(0.5625, 0.875, 0)])
-                lane(f, drums, initial: nil, [(0.5, 0.8125, 0)])
+                lane(f, volume, initial: nil, [settle])
+                lane(f, bass, initial: nil, [shut])
+                lane(f, drums, initial: nil, [shut])
+                lane(f, vocals, initial: nil, [(pre, 0.5, 0.0)])
+                lane(f, music, initial: nil, [(0.5625, 0.875, 0.0)])
             } else {
-                lane(f, volume, initial: nil, [(0.5625, 0.9375, 0)])
+                lane(f, volume, initial: nil, [settle, (0.5625, 0.9375, 0.0)])
             }
         }
         return out
@@ -230,5 +272,10 @@ enum Lanes {
         }
         cues.append(Cue(type: Int32(BE_EV_UNLOOP), deck: deck, p: 1, value: 0, from: .nan))
         return cues
+    }
+
+    static func bridgeCues(deck: Int, beats: Double, trackBeat: Double) -> [Cue] {
+        [Cue(type: Int32(BE_EV_LOOP), deck: deck, p: 0.25, value: beats >= 64 ? 8 : 4, from: trackBeat),
+         Cue(type: Int32(BE_EV_UNLOOP), deck: deck, p: 1, value: 0, from: .nan)]
     }
 }

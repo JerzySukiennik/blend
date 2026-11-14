@@ -7,19 +7,20 @@ Built for one MacBook and one listener. The song library is private and is not p
 ## What it does
 
 - **Two decks, four stems each**: vocal, drums, bass, music. Every stem can be muted on its own.
-- **Automix**: queue songs, Blend picks a phrase boundary and mixes like a DJ would, rotating through nine techniques so two transitions in a row never sound the same. Space forces the mix from the next four-bar boundary, `M` picks the technique yourself.
+- **Automix**: queue songs, Blend picks a phrase boundary and mixes like a DJ would, rotating through ten techniques so two transitions in a row never sound the same. Whatever the technique, only one drum kit, one bass and one lead vocal sound at a time. Space forces the mix from the next four-bar boundary, `M` picks the technique yourself.
   - `SWAP`: the next song comes in thin, drums first, then its music; on the phrase the lows trade places; the old song leaves through a rising filter and an echo tail.
   - `MELT`: the old song sinks under a low-pass while the new one opens up on top of it.
   - `CARRY`: the old vocal keeps singing over the new song's beat, then echoes out.
   - `RIDE`: only the new drums ride underneath, the old song gets filter and echo, clean swap on the phrase.
   - `LOOP`: the old song locks into a loop that halves again and again while the new drums build, the new song lands on the one.
   - `CHOP`: the two songs trade beats for two bars like a crossfader cut, then the new one takes over.
+  - `BRIDGE`: the old song is stripped to its drums, the drums loop and glide to the new tempo, the new song comes in on top. This is how songs with very different tempos are joined without a cut.
   - `ROLL`: stutter build on the old song, the new one drops in.
   - `WASH`: the old song washes out in filter and echo over a few bars.
   - `SPIN`: spinback into the new song.
-- **Entry point**: Blend also decides where the next song comes in. A long intro is trimmed so that its beat drops in exactly when the lows trade places (never past the first sung line), and the incoming song is nudged by a few milliseconds onto the kicks of the song that is playing.
-- **Keys**: when both keys are heard clearly and sit at most a semitone apart from a match, the next song is nudged by that semitone and the two play together (`SWAP`, `MELT`, `CARRY`). Otherwise Blend uses `RIDE`, `LOOP` or `CHOP`, where nothing melodic overlaps.
-- **Different tempos**: within about 10% the tempo glides from one song to the other during the blend and the pitch stays put. Between 11% and 22% the two songs meet halfway, and the tempo settles on the new song over the next eight bars. Further apart, Blend cuts with `WASH`, `ROLL` or `SPIN`.
+- **The moment**: the old song hands over where its vocal pauses, not in the middle of a line, and before a fade-out gets quiet. The next song is placed so that its first full bar or its first sung line starts exactly at the handover: a long intro is trimmed, a song that starts singing right away comes in later. It is also nudged by a few milliseconds onto the kicks of the song that is playing.
+- **Keys**: when both keys are heard clearly and sit at most a semitone apart from a match, the next song is nudged by that semitone and the two play together (`SWAP`, `MELT`, `CARRY`). Only closely related keys count as a match. Otherwise Blend uses `RIDE`, `LOOP` or `CHOP`, where nothing melodic overlaps.
+- **Different tempos**: within about 10% the tempo glides from one song to the other during the blend and the pitch stays put. Between 11% and 22% the two songs meet halfway, and the tempo settles on the new song over the next eight bars. Further apart, Blend uses `BRIDGE` two times out of three and a cut (`WASH`, `ROLL` or `SPIN`) the third time.
 - **Wandering tempos**: songs played by a live drummer, and even an orchestra, are straightened onto a steady grid when they load. Small drifts are resampled as they are; large ones (a few percent and more) also get their pitch corrected during playback, so nothing sounds like a warped tape.
 - **Two versions of one song**: a cover or remix can be linked to the original. Whenever the two are mixed or mashed up, the incoming one starts at the same moment of the song.
 - **Moves** (always quantized to the beat grid):

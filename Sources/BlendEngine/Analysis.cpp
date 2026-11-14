@@ -503,7 +503,7 @@ int32_t be_analyze(const be_track *t, const double *beatTimes, int32_t nBeats, c
         }
     }
     double octave = t->tempoHint > 0 ? 60.0 / T / t->tempoHint : 1.0;
-    if (60.0 / T > 176.0 || (octave > 1.7 && octave < 2.3)) {
+    if (t->tempoHint > 0 ? octave > 1.7 && octave < 2.3 : 60.0 / T > 176.0) {
         if (hitWeight(rhythm, t0 + T, 2 * T) > hitWeight(rhythm, t0, 2 * T)) t0 += T;
         T *= 2;
     } else if (octave > 0.43 && octave < 0.59) {

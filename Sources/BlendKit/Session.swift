@@ -68,6 +68,7 @@ public final class Session {
     @ObservationIgnored private var loopLen = [4.0, 4.0]
     @ObservationIgnored private var used: [Technique: Int] = [:]
     @ObservationIgnored private var useCount = 0
+    @ObservationIgnored private var bridgeRun = 0
     @ObservationIgnored private var rollDeck: Int?
     @ObservationIgnored private var rollTag = 0
     @ObservationIgnored private var rollLen = 0.5
@@ -164,7 +165,7 @@ public final class Session {
         let ratio = b.bpm / a.bpm
         if ratio > 1.22 || ratio < 0.82 { return 0 }
         let match = Key.match(key, b.key)
-        let harmonic = min(a.keyStrength, b.keyStrength) >= 0.05 && match.score > 0 && abs(match.shift) <= 1
+        let harmonic = min(a.keyStrength, b.keyStrength) >= 0.05 && match.score >= 2 && abs(match.shift) <= 1
         guard harmonic, ratio <= 1.11, ratio >= 0.9 else { return 1 }
         return abs(ratio - 1) < 0.045 && match.shift == 0 ? 3 : 2
     }
@@ -193,6 +194,11 @@ public final class Session {
     private func note(_ tech: Technique) {
         used[tech] = useCount
         useCount += 1
+        if tech == .bridge {
+            bridgeRun += 1
+        } else if !tech.blends {
+            bridgeRun = 0
+        }
     }
 
     private func effectiveKey(_ deck: Int) -> Int {
@@ -415,12 +421,17 @@ public final class Session {
         return best
     }
 
-    private func cueBar(_ b: LoadedTrack, lead: Int) -> Int {
+    private func entry(_ b: LoadedTrack, lead: Int, voice: Int) -> (bar: Int, delay: Int) {
         let sb = b.structure, intro = sb.firstFull - sb.startBar
-        guard intro > lead, intro <= 32 else { return sb.startBar }
-        var bar = sb.firstFull - lead
-        if let sung = sb.vocalStarts.first, sung < sb.firstFull { bar = min(bar, sb.phraseStart(atOrBefore: sung, every: 4)) }
-        return max(sb.startBar, bar)
+        var bar = intro > lead && intro <= 32 ? sb.firstFull - lead : sb.startBar
+        if sb.stemPresent[Stem.vocals.rawValue], let sung = sb.vocalStarts.first { bar = min(bar, sb.phraseStart(atOrBefore: sung, every: 4) - voice) }
+        return (max(sb.startBar, bar), min(lead, max(0, sb.startBar - bar)))
+    }
+
+    private func vocalGap(_ a: LoadedTrack, at bar: Int) -> Bool {
+        let voice = a.structure.level[Stem.vocals.rawValue]
+        guard bar >= 0, bar + 1 < voice.count else { return true }
+        return voice[bar] <= 0.25 && voice[bar + 1] <= 0.3
     }
 
     private func carries(_ a: LoadedTrack, _ b: LoadedTrack, from bar: Int, bars n: Int, entry: Int) -> Bool {
@@ -459,10 +470,11 @@ public final class Session {
         let wide = !toPlaying && !far && (ratio > 1.11 || ratio < 0.9)
         let keyed = Key.match(effectiveKey(f), toPlaying ? effectiveKey(t) : b.analysis.key)
         let sure = toPlaying || min(a.analysis.keyStrength, b.analysis.keyStrength) >= 0.05
-        let clash = related == nil && (!sure || keyed.score == 0 || abs(keyed.shift) > 1 || (toPlaying && keyed.shift != 0))
+        let clash = related == nil && (!sure || keyed.score < 2 || abs(keyed.shift) > 1 || (toPlaying && keyed.shift != 0))
         let stems = a.stems == 4 && b.stems == 4
         let drums = sb.stemPresent[Stem.drums.rawValue]
-        let endBar = sa.lastStrong + 1
+        let loopable = stems && drums && sa.stemPresent[Stem.drums.rawValue] && !toPlaying && !byHand && ratio > 0.6 && ratio < 1.67
+        let endBar = sa.finish
         let here = sa.bar(atBeat: da.beat)
 
         func place(_ want: Int) -> (bar: Int, bars: Int) {
@@ -486,17 +498,19 @@ public final class Session {
         var (bar, bars) = place(n)
         var options: [Technique]
         if far {
-            options = [.wash, .roll, .spin]
+            options = loopable && bars >= 8 && bridgeRun < 2 ? [.bridge] : [.wash, .roll, .spin]
         } else if toPlaying || byHand || !stems {
             options = clash ? [.ride] : stems && !toPlaying ? [.swap, .melt] : [.swap]
         } else if clash {
             options = bars >= 4 && drums ? [.ride, .loop, .chop] : [.ride]
         } else {
-            options = carries(a, b, from: bar, bars: bars, entry: twinBar(a, bar: bar, b) ?? cueBar(b, lead: bars / 2)) ? [.carry, .swap, .melt] : [.swap, .melt]
+            options = carries(a, b, from: bar, bars: bars, entry: twinBar(a, bar: bar, b) ?? entry(b, lead: bars / 2, voice: bars * 7 / 8).bar) ? [.carry, .swap, .melt] : [.swap, .melt]
         }
         var tech = pick(options)
         if let forced = style, forced != tech {
-            let able = !far && !toPlaying && !byHand && (stems || !forced.needsStems) && (bars >= 4 || !forced.scripted) && (forced != .carry || (bars >= 8 && sa.stemPresent[Stem.vocals.rawValue]))
+            var able = !far && !toPlaying && !byHand && (stems || !forced.needsStems) && (bars >= 4 || !forced.scripted)
+            if forced == .carry, bars < 8 || !sa.stemPresent[Stem.vocals.rawValue] { able = false }
+            if forced == .bridge { able = loopable && bars >= 8 }
             if options.contains(forced) || (!forced.blends && !byHand && !toPlaying) || (forced.blends && able) {
                 tech = forced
             } else if !auto, !byHand {
@@ -505,8 +519,26 @@ public final class Session {
         }
         if tech == .chop, bars > 8 { (bar, bars) = place(8) }
         let twin = toPlaying ? nil : twinBar(a, bar: bar, b)
-        let lead = tech == .loop || tech == .chop ? bars : tech == .ride ? bars * 3 / 4 : bars / 2
-        let toBeat = sb.beat(ofBar: twin ?? (toPlaying ? 0 : cueBar(b, lead: lead)))
+        let lead = tech == .loop || tech == .chop ? bars : tech == .ride || tech == .bridge ? bars * 3 / 4 : bars / 2
+        if auto, twin == nil, tech.blends, tech != .carry, sa.stemPresent[Stem.vocals.rawValue] {
+            var cut = lead
+            if tech == .bridge { cut = 0 }
+            if tech == .loop { cut = bars / 2 }
+            if tech == .chop { cut = bars - 2 }
+            for shift in [0, 4, -4, 8] {
+                let trial = bar + shift
+                if sa.beat(ofBar: trial) >= da.beat + 1, trial + bars < sa.bars, vocalGap(a, at: trial + cut) {
+                    bar = trial
+                    break
+                }
+            }
+        }
+        var cue = entry(b, lead: lead, voice: tech == .carry ? bars * 7 / 8 : lead)
+        if tech == .bridge {
+            cue = entry(b, lead: bars / 4, voice: bars / 4)
+            cue.delay += bars / 2
+        }
+        let toBeat = sb.beat(ofBar: twin ?? (toPlaying ? 0 : cue.bar))
         let length = Double(bars * 4)
         var nudge = 0.0
         let ka = toPlaying || !tech.blends ? 0 : a.kickOffset(fromBeat: sa.beat(ofBar: bar), beats: max(16, bars * 4))
@@ -517,20 +549,28 @@ public final class Session {
         tr.technique = tech
         tr.toWasPlaying = toPlaying
         tr.twin = twin != nil
+        tr.toDelay = twin == nil && !toPlaying && !byHand && tech.blends ? Double(cue.delay * 4) : 0
         if !tech.blends {
             tr.style = tech == .wash ? .echo : tech == .roll ? .build : .spin
             return tr
         }
         tr.clash = clash
-        tr.pitch = clash || toPlaying ? 0 : related.map { decks[f].pitch + $0 } ?? keyed.shift
-        tr.wide = wide && !byHand
+        tr.pitch = clash || toPlaying || tech == .bridge ? 0 : related.map { decks[f].pitch + $0 } ?? keyed.shift
+        tr.wide = wide && !byHand && tech != .bridge
         tr.lanes = Lanes.blend(tech, from: f, to: t, fromStems: a.stems == 4, toStems: b.stems == 4, toDrums: drums, toPlaying: toPlaying, beats: length) { deck, param in
             Double(s.deck(deck).param(param))
         }
         let meet = (home * b.analysis.bpm).squareRoot()
-        tr.lanes.append(Lane(deck: -1, param: Int32(BE_P_TEMPO), base: s.masterBpm, applyBase: false, segs: tr.wide ? [(p0: 0, p1: 0.3, v: meet)] : [(p0: 0, p1: 1, v: b.analysis.bpm)]))
+        var glide: (p0: Double, p1: Double, v: Double) = (p0: 0.0, p1: 1.0, v: b.analysis.bpm)
+        if tech == .bridge {
+            glide = (p0: 0.25, p1: 0.625, v: b.analysis.bpm)
+        } else if tr.wide {
+            glide = (p0: 0.0, p1: 0.3, v: meet)
+        }
+        tr.lanes.append(Lane(deck: -1, param: Int32(BE_P_TEMPO), base: s.masterBpm, applyBase: false, segs: [glide]))
         if tech == .loop { tr.cues = Lanes.loopCues(deck: f, beats: length, trackBeat: sa.beat(ofBar: bar) + length / 2) }
-        log?("plan \(tech.rawValue) \(a.info.title) bar \(bar) -> \(b.info.title) bar \(sb.bar(atBeat: toBeat)) (starts at \(sb.startBar), full at \(sb.firstFull)), kicks \(String(format: "%+.1f / %+.1f", ka * 1000, kb * 1000)) ms, nudge \(String(format: "%+.1f", nudge * 60000 / b.analysis.bpm)) ms, \(bars) bars, clash \(clash), wide \(tr.wide), twin \(tr.twin), key shift \(tr.pitch), tempo \(tr.tempoFrom) -> \(tr.tempoTo)")
+        if tech == .bridge { tr.cues = Lanes.bridgeCues(deck: f, beats: length, trackBeat: sa.beat(ofBar: bar) + length / 4) }
+        log?("plan \(tech.rawValue) \(a.info.title) bar \(bar) -> \(b.info.title) bar \(sb.bar(atBeat: toBeat)) (starts at \(sb.startBar), full at \(sb.firstFull), delay \(Int(tr.toDelay / 4)) bars), kicks \(String(format: "%+.1f / %+.1f", ka * 1000, kb * 1000)) ms, nudge \(String(format: "%+.1f", nudge * 60000 / b.analysis.bpm)) ms, \(bars) bars, clash \(clash), wide \(tr.wide), twin \(tr.twin), key shift \(tr.pitch), tempo \(tr.tempoFrom) -> \(tr.tempoTo)")
         return tr
     }
 
@@ -550,7 +590,7 @@ public final class Session {
         if !tr.toWasPlaying {
             tune(tr.to, tr.pitch, tag: tr.tag)
             for s in 0..<4 { engine.set(tr.to, Int32(BE_P_USER0) + Int32(s), decks[tr.to].stemOn[s] ? 1 : 0) }
-            engine.start(tr.to, at: tr.startBeat, trackBeat: tr.toTrackBeat, tag: tr.tag)
+            engine.start(tr.to, at: tr.startBeat + tr.toDelay, trackBeat: tr.toTrackBeat, tag: tr.tag)
         }
         schedule(tr, from: 0, start: tr.startBeat, length: tr.length)
         note(tr.technique)
@@ -623,6 +663,7 @@ public final class Session {
                 say("\(tr.technique.label) runs on its own")
                 return
             }
+            if s.deck(tr.to).playing == 0 { return }
             tr.progress = tr.progress(atBeat: s.masterBeat)
             engine.cancel(tag: tr.tag)
             tr.manual = true
@@ -797,7 +838,7 @@ public final class Session {
             let end = line(1.5 + (washed ? lead : 0))
             if washed {
                 engine.ramp(deck: c, filter, to: 0.62, start: end - lead, end: end - 0.5, curve: .easeIn, tag: tag)
-                engine.ramp(deck: c, echo, to: 0.85, start: end - min(lead, 3), end: end - 0.5, tag: tag)
+                engine.ramp(deck: c, echo, to: 0.65, start: end - min(lead, 3), end: end - 0.5, tag: tag)
             } else {
                 engine.ramp(deck: c, echo, to: 1, start: end - 1, end: end - 0.5, tag: tag)
             }

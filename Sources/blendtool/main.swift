@@ -346,17 +346,21 @@ func automix(_ argv: [String]) {
 
 func pairs() {
     let all = Library.scan().compactMap { info in LoadedTrack.cachedAnalysis(info).map { (info, $0) } }
-    var smooth = 0, ride = 0, wide = 0, cut = 0, total = 0
+    var smooth = 0, ride = 0, wide = 0, bridge = 0, cut = 0, total = 0
     for (ia, a) in all {
         for (ib, b) in all where ia.id != ib.id {
             total += 1
             let ratio = b.bpm / a.bpm
             if ratio > 1.22 || ratio < 0.82 {
-                cut += 1
+                if ia.hasStems, ib.hasStems, ratio > 0.6, ratio < 1.67 {
+                    bridge += 1
+                } else {
+                    cut += 1
+                }
                 continue
             }
             let m = Key.match(a.key, b.key)
-            let harmonic = min(a.keyStrength, b.keyStrength) >= 0.05 && m.score > 0 && abs(m.shift) <= 1
+            let harmonic = min(a.keyStrength, b.keyStrength) >= 0.05 && m.score >= 2 && abs(m.shift) <= 1
             if ratio > 1.11 || ratio < 0.9 {
                 wide += 1
             } else if harmonic {
@@ -368,7 +372,7 @@ func pairs() {
     }
     func pct(_ n: Int) -> String { String(format: "%.0f%%", 100 * Double(n) / Double(max(1, total))) }
     print("songs \(all.count), ordered pairs \(total)")
-    print("harmonic blend \(pct(smooth)), drum ride / loop / chop \(pct(ride)), tempo ride (11-22% apart) \(pct(wide)), cut (wash / roll / spin) \(pct(cut))")
+    print("harmonic blend \(pct(smooth)), drum ride / loop / chop \(pct(ride)), tempo ride (11-22% apart) \(pct(wide)), tempo far but bridgeable \(pct(bridge)) (two of three get the drum bridge), only a cut \(pct(cut))")
 }
 
 func barChroma(_ t: LoadedTrack, stems: [Int32]) -> [[Float]] {
