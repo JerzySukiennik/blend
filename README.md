@@ -36,6 +36,7 @@ Built for one MacBook and one listener. The song library is private and is not p
   - `K` BRAKE: vinyl brake into the next song
   - `X` SPIN: spinback into the next song
   - `T` VOICE: drops a famous line over the mix (a countdown, a speech, a mission call). Blend picks the clip and the start so that its last word lands on the next change: the handover of a running mix, the next drop or the next phrase. The song's own vocal steps aside and the music dips while the voice speaks. `T` again cuts it off
+  - `W` WORD: a sampler made of the same voices. Type a word or a few words (`iphone`, `we shall fight`), Blend lists up to five places where somebody says exactly that, with the speaker and the words around it, and a number key drops only those words on the next beat. Return takes the first one, Esc closes
   - `N` SWITCH: a quick change at the next good moment. Blend waits for the nearest phrase where the vocal pauses, gives the old song one bar of filter, echo and a short stutter, and drops the next song in on its first strong bar
 - **Output effects** (`F` cycles them): `RADIO` (a small mono speaker), `GLASS` (the party heard through a window), `HALL` (a big room), `LO-FI` (an old game console). They colour everything that plays, transitions included.
 - **Touch Bar**: `SWITCH` with a countdown, the four effects as toggles, a `STYLE` picker for the mix technique, a `ROLL` pad that stutters for as long as it is held, a `VOICE` button, and four dots that follow the beat with the number of bars left until the next automatic mix.
@@ -63,7 +64,7 @@ Built for one MacBook and one listener. The song library is private and is not p
 
 Needs Xcode 26 on macOS 26. The library lives in `~/Music/Blend/Library`, one folder per song with `vocals.m4a`, `drums.m4a`, `bass.m4a`, `other.m4a`, optional `beats.json` and `cover.jpg`. A folder with a single `mix.*` file plays without stems. Dropping audio files on the window adds them that way.
 
-Voice clips live in `~/Music/Blend/Speeches`, one folder per clip with `voice.m4a` and a `meta.json` (`title`, `speaker`, `year`, `seconds`, and `hit`, the second that should land on the beat, normally the end of the clip). They are private too.
+Voice clips live in `~/Music/Blend/Speeches`, one folder per clip with `voice.m4a` and a `meta.json` (`title`, `speaker`, `year`, `seconds`, `hit`, the second that should land on the beat, normally the end of the last word, and `words`, a list of `{"w": word, "a": start, "b": end}` in seconds that the WORD move searches and cuts by). They are private too.
 
 `meta.json` in a song folder may carry four hints:
 

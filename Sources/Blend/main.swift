@@ -226,6 +226,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     session.cycleStyle()
                 } else if key == "f" {
                     session.cycleEffect()
+                } else if key == "picker" {
+                    self.model.openWordPicker()
+                } else if key.hasPrefix("q=") {
+                    self.model.typeWord(String(key.dropFirst(2)))
+                } else if key.hasPrefix("pick") {
+                    self.model.pickWord((Int(key.dropFirst(4)) ?? 1) - 1)
                 } else if key == "voices" {
                     self.model.showVoices = true
                 } else if key == "styles" {
@@ -316,6 +322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 return false
             }
         }
+        if model.wordQuery != nil { return wordKey(e) }
         if e.isARepeat { return true }
         if e.keyCode == 53 {
             if model.tutorial != nil {
@@ -342,6 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "x": session.perform(.spin)
         case "n": session.perform(.quick)
         case "t": session.perform(.voice)
+        case "w": model.openWordPicker()
         case "f": session.cycleEffect()
         case "r": session.rollBegin()
         case "m": session.cycleStyle(e.modifierFlags.contains(.shift) ? -1 : 1)
@@ -361,6 +369,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "/", "?": startTutorial()
         default: break
         }
+        return true
+    }
+
+    func wordKey(_ e: NSEvent) -> Bool {
+        switch e.keyCode {
+        case 53:
+            model.closeWordPicker()
+            return true
+        case 36, 76:
+            if !e.isARepeat { model.pickWord(0) }
+            return true
+        case 51:
+            model.eraseWord()
+            return true
+        default:
+            break
+        }
+        let typed = e.characters ?? ""
+        if let digit = Int(typed), (1...5).contains(digit) {
+            if !e.isARepeat { model.pickWord(digit - 1) }
+            return true
+        }
+        let clean = typed.filter { $0.isLetter || $0.isNumber || $0 == " " || $0 == "'" }
+        if !clean.isEmpty { model.typeWord(clean) }
         return true
     }
 

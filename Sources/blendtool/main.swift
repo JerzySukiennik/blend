@@ -260,7 +260,7 @@ func automix(_ argv: [String]) {
     }
     let session = Session()
     session.loader = { info, done in done(Result { try LoadedTrack.load(info) }) }
-    session.voiceLoader = { speech, done in done(Speeches.load(speech)) }
+    session.voiceLoader = { speech, range, done in done(Speeches.load(speech, range: range)) }
     session.reloadSpeeches()
     var clock = 0.0
     session.log = { print(String(format: "[%7.2fs beat %8.2f] ", clock, session.engine.state.masterBeat) + $0) }
@@ -290,6 +290,13 @@ func automix(_ argv: [String]) {
                 session.toggleStem(Int(parts[1])!, Stem(rawValue: Int(parts[2])!)!)
             } else if cmd.hasPrefix("style:") {
                 session.setStyle(Technique(rawValue: String(cmd.dropFirst(6))))
+            } else if cmd.hasPrefix("word:") {
+                let parts = cmd.split(separator: ":").map(String.init)
+                if parts.count == 3, let speech = session.speeches.first(where: { $0.id == parts[1] }), let word = speech.words.first(where: { $0.text.lowercased() == parts[2] }) {
+                    session.speakWords(speech, from: word.start, to: word.end, label: word.text)
+                } else {
+                    print("    no such word")
+                }
             } else if cmd.hasPrefix("voice:") {
                 session.speak(session.speeches.first { $0.id == String(cmd.dropFirst(6)) })
             } else if cmd.hasPrefix("voicegain:") {

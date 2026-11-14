@@ -1,4 +1,4 @@
-// Blend app: the console screen (two platters, countdown, mix style and output effect, dual waveform strip, move pills).
+// Blend app: the console screen (two platters, countdown, mix style and output effect, dual waveform strip, move pills, word picker).
 import BlendKit
 import SwiftUI
 
@@ -20,6 +20,14 @@ struct ConsoleView: View {
             }
             .padding(.horizontal, u * 2.2)
             .padding(.bottom, u * 1.9)
+            .overlay(alignment: .bottomTrailing) {
+                if model.wordQuery != nil {
+                    WordPicker(model: model)
+                        .padding(.trailing, u * 2.2)
+                        .padding(.bottom, u * 6.4)
+                        .transition(.scale(scale: 0.9, anchor: .bottomTrailing).combined(with: .opacity))
+                }
+            }
             .environment(\.u, u)
         }
     }
@@ -186,6 +194,67 @@ struct CenterColumn: View {
     }
 }
 
+struct WordPicker: View {
+    @Environment(\.u) private var u
+    let model: AppModel
+
+    var body: some View {
+        let query = model.wordQuery ?? ""
+        let hits = model.wordHits
+        VStack(alignment: .leading, spacing: u * 0.8) {
+            HStack(spacing: u * 0.7) {
+                Image(systemName: "quote.bubble.fill").font(.system(size: u * 1.05, weight: .semibold)).foregroundStyle(Theme.dim)
+                Text(query.isEmpty ? "Type a word someone says" : query)
+                    .font(.system(size: u * 1.25, weight: .semibold))
+                    .foregroundStyle(query.isEmpty ? Theme.faint : Theme.text)
+                    .lineLimit(1)
+                if !query.isEmpty {
+                    RoundedRectangle(cornerRadius: 1).fill(Theme.text).frame(width: u * 0.14, height: u * 1.45).padding(.leading, -u * 0.58)
+                }
+                Spacer(minLength: 0)
+                KeyCap(text: "esc")
+            }
+            .frame(height: u * 2.2)
+            Rectangle().fill(Theme.line).frame(height: 1)
+            if hits.isEmpty {
+                Text(query.isEmpty ? "Try moon, dream, iphone, developers, schtonk" : "Nobody says that")
+                    .font(.system(size: u * 1.0, weight: .medium)).foregroundStyle(Theme.dim)
+                    .frame(maxWidth: .infinity, minHeight: u * 3.0, alignment: .leading)
+            } else {
+                VStack(spacing: u * 0.15) {
+                    ForEach(Array(hits.enumerated()), id: \.element.id) { index, hit in
+                        HStack(spacing: u * 0.9) {
+                            KeyCap(text: "\(index + 1)")
+                            VStack(alignment: .leading, spacing: u * 0.08) {
+                                Text("\(Text(hit.before).foregroundStyle(Theme.faint)) \(Text(hit.phrase).foregroundStyle(Theme.text)) \(Text(hit.after).foregroundStyle(Theme.faint))")
+                                    .font(.system(size: u * 1.05, weight: .semibold)).lineLimit(1).truncationMode(.tail)
+                                Text("\(hit.speech.speaker) · \(hit.speech.title)").font(.system(size: u * 0.82)).foregroundStyle(Theme.dim).lineLimit(1)
+                            }
+                            Spacer(minLength: u)
+                            Text(String(format: "%.1f s", hit.to - hit.from)).font(.system(size: u * 0.86)).monospacedDigit().foregroundStyle(Theme.dim)
+                        }
+                        .frame(height: u * 3.0)
+                    }
+                }
+            }
+            Rectangle().fill(Theme.line).frame(height: 1)
+            HStack(spacing: u * 0.6) {
+                Text("A number drops only these words, on the next beat").foregroundStyle(Theme.faint)
+                Spacer(minLength: 0)
+                KeyCap(text: "return")
+                Text("takes 1").foregroundStyle(Theme.dim)
+            }
+            .font(.system(size: u * 0.82, weight: .medium))
+        }
+        .padding(u * 1.3)
+        .frame(width: u * 36)
+        .background(RoundedRectangle(cornerRadius: u * 1.5, style: .continuous).fill(Theme.bgTop))
+        .background(RoundedRectangle(cornerRadius: u * 1.5, style: .continuous).fill(Color.black).shadow(color: .black.opacity(0.55), radius: u * 2.2, y: u * 0.9))
+        .overlay(RoundedRectangle(cornerRadius: u * 1.5, style: .continuous).strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+        .animation(Theme.snappy, value: hits.map(\.id))
+    }
+}
+
 struct MovesRow: View {
     @Environment(\.u) private var u
     let model: AppModel
@@ -193,8 +262,8 @@ struct MovesRow: View {
     var body: some View {
         let s = model.session
         HStack(spacing: u * 0.7) {
-            ForEach([Move.vocal, .beat, .build, .drop, .loop, .roll, .echo, .brake, .spin, .voice]) { move in
-                MovePill(move: move, active: isActive(move, s), pulse: s.flash == move ? s.flashCount : 0)
+            ForEach([Move.vocal, .beat, .build, .drop, .loop, .roll, .echo, .brake, .spin, .voice, .word]) { move in
+                MovePill(move: move, active: isActive(move, s) || (move == .word && model.wordQuery != nil), pulse: s.flash == move ? s.flashCount : 0)
             }
         }
     }

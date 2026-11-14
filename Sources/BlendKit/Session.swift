@@ -59,9 +59,9 @@ public final class Session {
     }
     @ObservationIgnored public var log: ((String) -> Void)?
     @ObservationIgnored public var voiceGain = 1.3
-    @ObservationIgnored public var voiceLoader: (Speech, @escaping (OpaquePointer?) -> Void) -> Void = { speech, done in
+    @ObservationIgnored public var voiceLoader: (Speech, ClosedRange<Double>?, @escaping (OpaquePointer?) -> Void) -> Void = { speech, range, done in
         DispatchQueue.global(qos: .userInitiated).async {
-            let clip = Speeches.load(speech)
+            let clip = Speeches.load(speech, range: range)
             DispatchQueue.main.async { done(clip) }
         }
     }
@@ -219,6 +219,18 @@ public final class Session {
         return (big.filter { $0 > s.masterBeat }.sorted(), small.filter { $0 > s.masterBeat })
     }
 
+    private func voiceFit(_ clip: Speech, _ marks: (big: [Double], small: [Double]), now: Double, bps: Double) -> (start: Double, mark: Double, cost: Double)? {
+        var best: (start: Double, mark: Double, cost: Double)?
+        for (list, reach, cost) in [(marks.big, 16.0, 0.0), (marks.small, 8.0, 8.0)] {
+            for mark in list {
+                let wait = mark - clip.hit * bps - now
+                guard wait >= 0.75, wait <= reach, wait + cost < (best?.cost ?? .infinity) else { continue }
+                best = (now + wait, mark, wait + cost)
+            }
+        }
+        return best
+    }
+
     public func speak(_ wanted: Speech? = nil) {
         if let old = speaking {
             engine.cancel(tag: voiceTag)
@@ -240,17 +252,12 @@ public final class Session {
         if let c = current, !paused {
             let marks = voiceMarks(s)
             var best = Double.infinity
-            for (list, reach, cost) in [(marks.big, 16.0, 0.0), (marks.small, 8.0, 8.0)] {
-                for mark in list {
-                    for clip in pool {
-                        let wait = mark - clip.hit * bps - now
-                        guard wait >= 0.75, wait <= reach, wait + cost < best else { continue }
-                        best = wait + cost
-                        pick = clip
-                        start = now + wait
-                        landing = String(format: ", lands on beat %.1f", mark)
-                    }
-                }
+            for clip in pool {
+                guard let fit = voiceFit(clip, marks, now: now, bps: bps), fit.cost < best else { continue }
+                best = fit.cost
+                pick = clip
+                start = fit.start
+                landing = String(format: ", lands on beat %.1f", fit.mark)
             }
             if start.isNaN {
                 let d = s.deck(c)
@@ -258,16 +265,37 @@ public final class Session {
             }
         }
         voiceBag.removeAll { $0.id == pick.id }
+        let from = start.isNaN ? now : start, bars = Int(((from - now) / 4).rounded())
+        log?(String(format: "voice %@ (%.1f s) starts at beat %.2f%@", pick.id as NSString, pick.seconds, from, landing as NSString))
+        fire(pick, range: nil, start: start, note: pick.speaker + " · " + pick.title + (bars >= 2 ? " · in \(bars) bars" : ""))
+    }
+
+    public func speakWords(_ speech: Speech, from: Double, to: Double, label: String) {
+        if speaking != nil {
+            engine.cancel(tag: voiceTag)
+            engine.event(Int32(BE_EV_VOICE_STOP), deck: -1, at: .nan)
+            speaking = nil
+        }
+        guard to > from else { return }
+        let s = engine.state
+        var start = Double.nan
+        if let c = current, !paused {
+            let d = s.deck(c)
+            start = (d.beat + 0.3).rounded(.up) - d.offset - Speeches.lead * max(0.5, s.masterBpm / 60)
+        }
+        log?(String(format: "word %@ \"%@\" %.2f-%.2f s starts at beat %.2f", speech.id as NSString, label as NSString, from, to, start.isNaN ? s.masterBeat : start))
+        fire(speech, range: from...to, start: start, note: speech.speaker + " · “" + label + "”")
+    }
+
+    private func fire(_ pick: Speech, range: ClosedRange<Double>?, start: Double, note: String) {
         speaking = pick
         voiceHeard = false
-        voiceFrom = start.isNaN ? now : start
+        voiceFrom = start.isNaN ? engine.state.masterBeat : start
         voiceTag = nextTag()
         let tag = voiceTag, gain = voiceGain
-        let bars = Int(((voiceFrom - now) / 4).rounded())
-        say(pick.speaker + " · " + pick.title + (bars >= 2 ? " · in \(bars) bars" : ""))
-        log?(String(format: "voice %@ (%.1f s) starts at beat %.2f%@", pick.id as NSString, pick.seconds, voiceFrom, landing as NSString))
+        say(note)
         let engine = self.engine
-        voiceLoader(pick) { [weak self] clip in
+        voiceLoader(pick, range) { [weak self] clip in
             guard let self, self.speaking?.id == pick.id, self.voiceTag == tag, let clip else {
                 if let clip { be_track_release(clip) }
                 if let self, self.speaking?.id == pick.id, self.voiceTag == tag { self.speaking = nil }
@@ -462,6 +490,7 @@ public final class Session {
         case .roll: rollBegin(hold: false)
         case .quick: quickSwitch()
         case .voice: speak()
+        case .word: break
         }
     }
 

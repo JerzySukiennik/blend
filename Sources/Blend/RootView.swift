@@ -94,7 +94,7 @@ struct TutorialOverlay: View {
         ("Slide two fingers up or down on a deck", "That sweeps a filter over the song. Lift your fingers and it springs back.", 2),
         ("Slide along the bottom edge", "The strip blends this song into the next one. Slide back to undo it.", 3),
         ("Tap a bottom corner", "The left corner plays or pauses Deck A, the right corner Deck B.", 4),
-        ("Now the keys", "Space mixes into the next song and M picks how. N switches at the next good moment, F changes the output effect, T drops a famous voice over the mix, V B U D L R E K X fire the moves. The Touch Bar has the same switch, effects and voice. Press space to finish.", 0)
+        ("Now the keys", "Space mixes into the next song and M picks how. N switches at the next good moment, F changes the output effect, T drops a famous voice over the mix, W lets you type a word and drop only that word, V B U D L R E K X fire the moves. The Touch Bar has the same switch, effects and voice. Press space to finish.", 0)
     ]
 
     var body: some View {

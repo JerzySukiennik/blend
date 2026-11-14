@@ -9,6 +9,17 @@ protocol FrameDriven: AnyObject {
     func frame(_ state: be_state, model: AppModel)
 }
 
+struct WordHit: Identifiable {
+    let id: String
+    let speech: Speech
+    let from: Double
+    let to: Double
+    let before: String
+    let phrase: String
+    let after: String
+    let exact: Bool
+}
+
 @Observable
 final class AppModel {
     enum Mode {
@@ -22,6 +33,8 @@ final class AppModel {
     var selected = 0
     var onlyFits = false
     var showVoices = false
+    var wordQuery: String?
+    private(set) var wordHits: [WordHit] = []
     var dropTargeted = false
 
     @ObservationIgnored var audio: AudioOutput?
@@ -34,8 +47,9 @@ final class AppModel {
 
     static let tutorialSteps = 6
 
+    private func plain(_ s: String) -> String { s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).filter { $0.isLetter || $0.isNumber || $0 == " " } }
+
     var filtered: [TrackInfo] {
-        func plain(_ s: String) -> String { s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).filter { $0.isLetter || $0.isNumber || $0 == " " } }
         let q = plain(search.trimmingCharacters(in: .whitespaces))
         var list = q.isEmpty ? session.library : session.library.filter { plain($0.title).contains(q) || plain($0.artist).contains(q) }
         if onlyFits, let ref = session.mixReference {
@@ -46,7 +60,6 @@ final class AppModel {
     }
 
     var voices: [Speech] {
-        func plain(_ s: String) -> String { s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).filter { $0.isLetter || $0.isNumber || $0 == " " } }
         let q = plain(search.trimmingCharacters(in: .whitespaces))
         return q.isEmpty ? session.speeches : session.speeches.filter { plain($0.title).contains(q) || plain($0.speaker).contains(q) || "\($0.year)".contains(q) }
     }
@@ -59,6 +72,80 @@ final class AppModel {
     func toggleVoices() {
         showVoices.toggle()
         selected = 0
+    }
+
+    func openWordPicker() {
+        guard mode == .console else { return }
+        if session.speeches.isEmpty { session.reloadSpeeches() }
+        withAnimation(Theme.snappy) {
+            wordQuery = ""
+            wordHits = []
+        }
+        touch()
+    }
+
+    func closeWordPicker() {
+        guard wordQuery != nil else { return }
+        withAnimation(Theme.snappy) { wordQuery = nil }
+    }
+
+    func typeWord(_ text: String) {
+        guard let query = wordQuery, query.count < 40 else { return }
+        wordQuery = query + text
+        refreshWords()
+    }
+
+    func eraseWord() {
+        guard let query = wordQuery else { return }
+        if query.isEmpty {
+            closeWordPicker()
+        } else {
+            wordQuery = String(query.dropLast())
+            refreshWords()
+        }
+    }
+
+    func pickWord(_ index: Int) {
+        guard wordQuery != nil, wordHits.indices.contains(index) else { return }
+        let hit = wordHits[index]
+        session.speakWords(hit.speech, from: hit.from, to: hit.to, label: hit.phrase)
+        closeWordPicker()
+        wake()
+    }
+
+    private func refreshWords() {
+        let needles = plain(wordQuery ?? "").split(separator: " ").map(String.init)
+        guard !needles.isEmpty else {
+            wordHits = []
+            return
+        }
+        var hits: [WordHit] = []
+        for speech in session.speeches where speech.words.count >= needles.count {
+            let spoken = speech.words.map { plain($0.text) }
+            var found: (index: Int, exact: Bool)?
+            for i in 0...(spoken.count - needles.count) {
+                var matches = true, exact = true
+                for (k, needle) in needles.enumerated() where matches {
+                    let word = spoken[i + k]
+                    if word == needle { continue }
+                    if k == needles.count - 1, word.hasPrefix(needle) {
+                        exact = false
+                    } else {
+                        matches = false
+                    }
+                }
+                guard matches else { continue }
+                if found == nil || exact { found = (i, exact) }
+                if exact { break }
+            }
+            guard let found else { continue }
+            let i = found.index, j = i + needles.count - 1, words = speech.words
+            hits.append(WordHit(id: speech.id, speech: speech, from: words[i].start, to: words[j].end,
+                                before: words[max(0, i - 3)..<i].map(\.text).joined(separator: " "), phrase: words[i...j].map(\.text).joined(separator: " "),
+                                after: words[(j + 1)..<min(words.count, j + 4)].map(\.text).joined(separator: " "), exact: found.exact))
+        }
+        hits.sort { ($0.exact ? 0 : 1, $0.speech.speaker, $0.id) < ($1.exact ? 0 : 1, $1.speech.speaker, $1.id) }
+        wordHits = Array(hits.prefix(5))
     }
 
     func speakSelected() {
@@ -79,6 +166,7 @@ final class AppModel {
 
     func setMode(_ new: Mode) {
         guard mode != new else { return }
+        wordQuery = nil
         withAnimation(Theme.spring) { mode = new }
         if new == .library {
             session.reloadLibrary()
